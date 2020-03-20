@@ -6,6 +6,7 @@ import re
 
 import numpy as np
 import tensorflow as tf
+from sklearn.utils import class_weight
 
 from uppercase_data import UppercaseData
 
@@ -18,6 +19,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
     parser.add_argument("--embedding_dim", default=15, type=int, help="Dimensionality of embeddings.")
     parser.add_argument("--hidden_layers", default="500", type=str, help="Hidden layer configuration.")
+    parser.add_argument("--recurrence_layers", default="100", type=str, help="Recurrence layer configuration")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
@@ -30,11 +32,13 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate_final", default=None, type=float, help="Final learning rate.")
     parser.add_argument("--momentum", default=None, type=float, help="Momentum.")
     parser.add_argument("--optimizer", default="SGD", type=str, help="Optimizer to use.")
-    parser.add_argument("--class_weights", default="0.5, 0.5", type=str, help="Weights for the classes.")
+    parser.add_argument("--class_weights", action="store_true", help="Whether to use weights for the classes.")
     parser.add_argument("--recurrence", default=None, type=str, help="Type of recurrent network [LSTM, GRU]")
+    parser.add_argument("--dropout",default=None, type=float, help="Dropout after the hiddden layers")
     args = parser.parse_args([] if "__file__" not in globals() else None)
     args.hidden_layers = [int(hidden_layer) for hidden_layer in args.hidden_layers.split(",") if hidden_layer]
-    args.class_weights = {idx: float(weight) for idx, weight in enumerate(args.class_weights.split(",")) if weight}
+    args.recurrence_layers = [int(recurrence_layer) for recurrence_layer in args.recurrence_layers.split(",") if recurrence_layer]
+    #args.class_weights = {idx: float(weight) for idx, weight in enumerate(args.class_weights.split(",")) if weight}
     # Fix random seeds and threads
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
@@ -84,23 +88,28 @@ if __name__ == "__main__":
     model = tf.keras.Sequential()
     model.add(tf.keras.layers.Embedding(args.alphabet_size, args.embedding_dim, input_length=2 * args.window + 1))
 
-    if args.recurrence not in ["LSTM", "GRU"]:
+    if args.recurrence_layers:
+        for i, layer_dim in enumerate(args.recurrence_layers):
+            if args.recurrence == "LSTM":
+                model.add(tf.keras.layers.LSTM(
+                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                    return_sequences=(i != len(args.recurrence_layers) - 1), name=f"LSTM_{i}"))
+    
+            elif args.recurrence == "GRU":
+                model.add(tf.keras.layers.GRU(
+                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                    return_sequences=(i != len(args.recurrence_layers) - 1), name=f"GRU_{i}"))
+
+            if args.dropout:
+                model.add(tf.keras.layers.Dropout(rate=args.dropout))
+    else:
         model.add(tf.keras.layers.Flatten(name='flatten'))
 
-    for i, layer_dim in enumerate(args.hidden_layers):
-        if args.recurrence == "LSTM":
-            model.add(tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-                layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                return_sequences=(i != len(args.hidden_layers) - 1), name=f"biLSTM_{i}")))
-
-        elif args.recurrence == "GRU":
-            model.add(tf.keras.layers.Bidirectional(tf.keras.layers.GRU(
-                layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                return_sequences=(i != len(args.hidden_layers) - 1), name=f"biGRU_{i}")))
-
-        else:
-            model.add(tf.keras.layers.Dense(layer_dim, activation=activation,
-                                            kernel_regularizer=tf.keras.regularizers.l2(args.l2), name=f"hidden_{i}"))
+    for j, layer_dim in enumerate(args.hidden_layers):
+        model.add(tf.keras.layers.Dense(layer_dim, activation=activation,
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2), name=f"hidden_{j}"))
+        if args.dropout:
+            model.add(tf.keras.layers.Dropout(rate=args.dropout))
 
     model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax, name="output"))
 
@@ -127,17 +136,29 @@ if __name__ == "__main__":
 
     model.compile(
         optimizer=optimizer,
-        loss=tf.losses.SparseCategoricalCrossentropy(),
-        metrics=[tf.metrics.SparseCategoricalAccuracy()],
+        loss=tf.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
+        metrics=[tf.metrics.CategoricalAccuracy()],
     )
 
+    es_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=50)
+    tb_callback=tf.keras.callbacks.TensorBoard(args.logdir, update_freq=100, profile_batch=0)
+
+    one_hot_train = tf.one_hot(uppercase_data.train.data["labels"],2)
+    one_hot_val = tf.one_hot(uppercase_data.dev.data["labels"],2)
+    if args.class_weights:
+        class_weights = class_weight.compute_class_weight('balanced', np.unique(uppercase_data.train.data["labels"]),
+                                                          uppercase_data.train.data["labels"])
+    else:
+        class_weights = None
+
+    es_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=50)
     tb_callback=tf.keras.callbacks.TensorBoard(args.logdir, update_freq=100, profile_batch=0)
 
     model.fit(
-        uppercase_data.train.data["windows"], uppercase_data.train.data["labels"],
+        uppercase_data.train.data["windows"], one_hot_train,
         batch_size=args.batch_size, epochs=args.epochs,
-        validation_data=(uppercase_data.dev.data["windows"], uppercase_data.dev.data["labels"]),
-        #class_weight=args.class_weights,
+        validation_data=(uppercase_data.dev.data["windows"], one_hot_val),
+        class_weight=class_weights,
         callbacks=[tb_callback]
     )
 
