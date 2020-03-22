@@ -92,25 +92,28 @@ if __name__ == "__main__":
 
     if args.batch_norm:
         model.add(tf.keras.layers.BatchNormalization())
-    if args.recurrence_layers:
-        for i, layer_dim in enumerate(args.recurrence_layers):
-            if args.recurrence == "LSTM":
-                model.add(tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
-                    return_sequences=True, return_state=False, name=f"LSTM_{i}"), merge_mode='concat'))
-    
-            elif args.recurrence == "GRU":
-                model.add(tf.keras.layers.Bidirectional(tf.keras.layers.GRU(
-                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
-                    return_sequences=True, return_state=False, name=f"GRU_{i}"), merge_mode='concat'))
 
-
-            if args.dropout:
-                model.add(tf.keras.layers.Dropout(rate=args.dropout))
-
-        model.add(tf.keras.layers.Lambda(lambda seq: seq[:,args.window,:]))
-    else:
-        model.add(tf.keras.layers.Flatten(name='flatten'))
+    if args.dropout:
+        model.add(tf.keras.layers.Dropout(rate=args.dropout/2.))
+    # if args.recurrence_layers:
+    #     for i, layer_dim in enumerate(args.recurrence_layers):
+    #         if args.recurrence == "LSTM":
+    #             model.add(tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
+    #                 layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
+    #                 return_sequences=True, return_state=False, name=f"LSTM_{i}"), merge_mode='concat'))
+    #
+    #         elif args.recurrence == "GRU":
+    #             model.add(tf.keras.layers.Bidirectional(tf.keras.layers.GRU(
+    #                 layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
+    #                 return_sequences=True, return_state=False, name=f"GRU_{i}"), merge_mode='concat'))
+    #
+    #
+    #         if args.dropout:
+    #             model.add(tf.keras.layers.Dropout(rate=args.dropout))
+    #
+    #     model.add(tf.keras.layers.Lambda(lambda seq: seq[:,args.window,:]))
+    # else:
+    model.add(tf.keras.layers.Flatten(name='flatten'))
 
     for j, layer_dim in enumerate(args.hidden_layers):
         model.add(tf.keras.layers.Dense(layer_dim, activation=activation,
