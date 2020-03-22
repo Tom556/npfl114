@@ -33,6 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--momentum", default=None, type=float, help="Momentum.")
     parser.add_argument("--optimizer", default="SGD", type=str, help="Optimizer to use.")
     parser.add_argument("--class_weights", action="store_true", help="Whether to use weights for the classes.")
+    parser.add_argument("--batch_norm", action="store_true", help="Whether to conduct batch norm on embeddings")
     parser.add_argument("--recurrence", default=None, type=str, help="Type of recurrent network [LSTM, GRU]")
     parser.add_argument("--dropout",default=None, type=float, help="Dropout after the hiddden layers")
     parser.add_argument("--clip_norm", default=None, type=float, help="Clipping norm of the gradient")
@@ -89,20 +90,25 @@ if __name__ == "__main__":
     model = tf.keras.Sequential()
     model.add(tf.keras.layers.Embedding(args.alphabet_size, args.embedding_dim, input_length=2 * args.window + 1))
 
+    if args.batch_norm:
+        model.add(tf.keras.layers.BatchNormalization())
     if args.recurrence_layers:
         for i, layer_dim in enumerate(args.recurrence_layers):
             if args.recurrence == "LSTM":
-                model.add(tf.keras.layers.LSTM(
-                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                    return_sequences=(i != len(args.recurrence_layers) - 1), name=f"LSTM_{i}"))
+                model.add(tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
+                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
+                    return_sequences=True, return_state=False, name=f"LSTM_{i}"), merge_mode='concat'))
     
             elif args.recurrence == "GRU":
-                model.add(tf.keras.layers.GRU(
-                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                    return_sequences=(i != len(args.recurrence_layers) - 1), name=f"GRU_{i}"))
+                model.add(tf.keras.layers.Bidirectional(tf.keras.layers.GRU(
+                    layer_dim, kernel_regularizer=tf.keras.regularizers.l2(args.l2), #recurrent_dropout=args.dropout,
+                    return_sequences=True, return_state=False, name=f"GRU_{i}"), merge_mode='concat'))
+
 
             if args.dropout:
                 model.add(tf.keras.layers.Dropout(rate=args.dropout))
+
+        model.add(tf.keras.layers.Lambda(lambda seq: seq[:,args.window,:]))
     else:
         model.add(tf.keras.layers.Flatten(name='flatten'))
 
