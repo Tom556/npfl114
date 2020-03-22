@@ -35,6 +35,7 @@ if __name__ == "__main__":
     parser.add_argument("--class_weights", action="store_true", help="Whether to use weights for the classes.")
     parser.add_argument("--recurrence", default=None, type=str, help="Type of recurrent network [LSTM, GRU]")
     parser.add_argument("--dropout",default=None, type=float, help="Dropout after the hiddden layers")
+    parser.add_argument("--clip_norm", default=None, type=float, help="Clipping norm of the gradient")
     args = parser.parse_args([] if "__file__" not in globals() else None)
     args.hidden_layers = [int(hidden_layer) for hidden_layer in args.hidden_layers.split(",") if hidden_layer]
     args.recurrence_layers = [int(recurrence_layer) for recurrence_layer in args.recurrence_layers.split(",") if recurrence_layer]
@@ -130,9 +131,10 @@ if __name__ == "__main__":
 
     optimizer = None
     if args.optimizer == 'SGD':
-        optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=(args.momentum or 0.0))
+        optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule,
+                                      momentum=(args.momentum or 0.0), clipnorm=args.clip_norm)
     elif args.optimizer == 'Adam':
-        optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
+        optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule, clipnorm=args.clip_norm)
 
     model.compile(
         optimizer=optimizer,
