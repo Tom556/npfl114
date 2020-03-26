@@ -48,6 +48,11 @@ if __name__ == "__main__":
     mnist = MNIST()
 
     # Create the model
+    if args.activation == 'none':
+        activation = None
+    else:
+        activation = args.activation
+
     model = tf.keras.Sequential()
     model.add(tf.keras.layers.InputLayer([MNIST.H, MNIST.W, MNIST.C]))
     # TODO: Finish the model. Namely add:
@@ -57,6 +62,10 @@ if __name__ == "__main__":
     #   from `args.activation`, allowing "none", "relu", "tanh", "sigmoid".
     # - finally, add a final fully connected layer with
     #   `MNIST.LABELS` units and `tf.nn.softmax` activation.
+    model.add(tf.keras.layers.Flatten(name='flatten'))
+    for i in range(args.layers):
+        model.add(tf.keras.layers.Dense(args.hidden_layer, activation=activation, name=f"hidden_{i}"))
+    model.add(tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax, name="output"))
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(),
@@ -77,6 +86,7 @@ if __name__ == "__main__":
     )
     tb_callback.on_epoch_end(1, {"val_test_" + metric: value for metric, value in zip(model.metrics_names, test_logs)})
 
+    accuracy = test_logs[1]
     # TODO: Write test accuracy as percentages rounded to two decimal places.
     with open("mnist_layers_activations.out", "w") as out_file:
         print("{:.2f}".format(100 * accuracy), file=out_file)

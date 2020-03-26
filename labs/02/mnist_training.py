@@ -76,9 +76,28 @@ if __name__ == "__main__":
     #   If a learning rate schedule is used, you can find out the current learning
     #   rate by using `model.optimizer.learning_rate(model.optimizer.iterations)`,
     #   so after training this value should be `args.learning_rate_final`.
+    learning_rate_final = args.learning_rate_final
+
+    decay_steps = int(mnist.train.size * args.epochs / args.batch_size)
+    learning_rate_schedule = None
+    if args.decay == 'polynomial':
+        learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
+                                                decay_steps=decay_steps, end_learning_rate=learning_rate_final)
+    elif args.decay == 'exponential':
+        decay_rate = learning_rate_final / args.learning_rate
+        learning_rate_schedule = tf.optimizers.schedules.ExponentialDecay(args.learning_rate,
+                                                 decay_steps=decay_steps, decay_rate=decay_rate, staircase=False)
+    else:
+       learning_rate_schedule = args.learning_rate
+
+    optimizer = None
+    if args.optimizer == 'SGD':
+        optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=(args.momentum or 0.0))
+    elif args.optimizer == 'Adam':
+        optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
 
     model.compile(
-        optimizer=None,
+        optimizer=optimizer,
         loss=tf.losses.SparseCategoricalCrossentropy(),
         metrics=[tf.metrics.SparseCategoricalAccuracy()],
     )
@@ -97,5 +116,10 @@ if __name__ == "__main__":
     tb_callback.on_epoch_end(1, {"val_test_" + metric: value for metric, value in zip(model.metrics_names, test_logs)})
 
     # TODO: Write test accuracy as percentages rounded to two decimal places.
+    accuracy = test_logs[1]
     with open("mnist_training.out", "w") as out_file:
         print("{:.2f}".format(100 * accuracy), file=out_file)
+
+    if args.decay:
+        print("Final learning rate:")
+        print(model.optimizer.learning_rate(model.optimizer.iterations))

@@ -8,7 +8,7 @@ class MNIST:
     H, W, C = 28, 28, 1
     LABELS = 10
 
-    _URL = "https://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/datasets/"
+    _URL = "http://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/datasets/"
 
     class Dataset:
         def __init__(self, data, shuffle_batches, seed=42):

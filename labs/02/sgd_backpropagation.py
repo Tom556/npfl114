@@ -19,6 +19,9 @@ class Model(tf.Module):
         #   initialized to `tf.random.normal` value with stddev=0.1 and seed=args.seed,
         # - _b2, which is a trainable Variable of size [MNIST.LABELS] initialized to zeros
 
+        self._W2 = tf.Variable(tf.random.normal([args.hidden_layer, MNIST.LABELS], stddev=0.1, seed=args.seed), trainable=True)
+        self._b2 = tf.Variable(tf.zeros([MNIST.LABELS]), trainable=True)
+
     def predict(self, inputs):
         # TODO: Define the computation of the network. Notably:
         # - start by reshaping the inputs to shape [inputs.shape[0], -1].
@@ -28,6 +31,14 @@ class Model(tf.Module):
         # - apply `tf.nn.tanh`
         # - multiply the result by `self._W2` and then add `self._b2`
         # - finally apply `tf.nn.softmax` and return the result
+
+        inputs = tf.reshape(inputs, [inputs.shape[0], -1])
+        latents = inputs @ self._W1 + self._b1
+        latents = tf.nn.tanh(latents)
+        outputs = latents @ self._W2 + self._b2
+        outputs = tf.nn.softmax(outputs)
+
+        return outputs
 
     def train_epoch(self, dataset):
         for batch in dataset.batches(args.batch_size):
@@ -40,14 +51,15 @@ class Model(tf.Module):
             # The tf.GradientTape is used to record all operations inside the with block.
             with tf.GradientTape() as tape:
                 # TODO: Compute the predicted probabilities of the batch images using `self.predict`
-                probabilities = ...
+                probabilities = self.predict(batch["images"])
 
                 # TODO: Compute the loss:
                 # - for every batch example, it is the categorical crossentropy of the
                 #   predicted probabilities and gold batch label
                 # - finally, compute the average across the batch examples
-                loss = ...
-
+                one_hot_labels = tf.one_hot(batch["labels"], MNIST.LABELS)
+                loss = tf.losses.categorical_crossentropy(one_hot_labels, probabilities)
+                loss = tf.reduce_mean(loss)
             # We create a list of all variables. Note that a `tf.Module` automatically
             # tracks owned variables, so we could also used `self.trainable_variables`
             # (or even `self.variables`, which is useful for loading/saving).
@@ -55,7 +67,7 @@ class Model(tf.Module):
 
             # TODO: Compute the gradient of the loss with respect to variables using
             # backpropagation algorithm via `tape.gradient`
-            gradients = ...
+            gradients = tape.gradient(loss, variables)
 
             for variable, gradient in zip(variables, gradients):
                 # TODO: Perform the SGD update with learning rate `args.learning_rate`
@@ -63,15 +75,17 @@ class Model(tf.Module):
                 # variable value with `variable.assign` or in this case the more
                 # efficient `variable.assign_sub`.
 
+                variable.assign_sub(args.learning_rate * gradient)
+
     def evaluate(self, dataset):
         # Compute the accuracy of the model prediction
         correct = 0
         for batch in dataset.batches(args.batch_size):
             # TODO: Compute the probabilities of the batch images
-            probabilities = ...
+            probabilities = self.predict(batch["images"])
             # TODO: Evaluate how many batch examples were predicted
             # correctly and increase `correct` variable accordingly.
-            correct += ...
+            correct += tf.reduce_sum(tf.cast(tf.equal(tf.argmax(probabilities, axis=1), batch["labels"]), dtype=tf.float32))
         return correct / dataset.size
 
 
@@ -115,16 +129,16 @@ if __name__ == "__main__":
 
     for epoch in range(args.epochs):
         # TODO: Run the `train_epoch` with `mnist.train` dataset
-
+        model.train_epoch(mnist.train)
         # TODO: Evaluate the dev data using `evaluate` on `mnist.dev` dataset
-        accuracy = ...
+        accuracy = model.evaluate(mnist.dev)
 
         print("Dev accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * accuracy), flush=True)
         with writer.as_default():
             tf.summary.scalar("dev/accuracy", 100 * accuracy, step=epoch + 1)
 
     # TODO: Evaluate the test data using `evaluate` on `mnist.test` dataset
-    accuracy = ...
+    accuracy = model.evaluate(mnist.test)
     print("Test accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * accuracy), flush=True)
     with writer.as_default():
         tf.summary.scalar("test/accuracy", 100 * accuracy, step=epoch + 1)
