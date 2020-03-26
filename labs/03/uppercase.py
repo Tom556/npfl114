@@ -186,3 +186,6 @@ if __name__ == "__main__":
                 out_file.write(char)
     out_file.close()
 
+    model.save("uppercase-model-{}.h5".format(datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")),
+               include_optimizer=False)
+
