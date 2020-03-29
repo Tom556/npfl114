@@ -34,7 +34,7 @@ class Network:
         # You can assume the resulting network is valid; it is fine to crash if it is not.
         #
         # Produce the results in variable `hidden`.
-
+        hidden = self.create_cnn(args.cnn, inputs)
         # Add the final output layer
         outputs = tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax)(hidden)
 
@@ -58,6 +58,44 @@ class Network:
         test_logs = self._model.evaluate(mnist.test.data["images"], mnist.test.data["labels"], batch_size=args.batch_size)
         self._tb_callback.on_epoch_end(1, {"val_test_" + metric: value for metric, value in zip(self._model.metrics_names, test_logs)})
         return test_logs[self._model.metrics_names.index("accuracy")]
+
+    def create_cnn(self, parameters, inputs):
+        hidden = inputs
+        res_blocks = re.findall('\[.*\]', parameters)
+        params = re.sub('\-\[.*\]', '', parameters)
+
+
+        for layer_params in params.split(','):
+            layer_params = layer_params.split("-")
+            if layer_params[0] in {'C', 'CB'}:
+                _, filters, kernel_size, stride, padding = layer_params
+                hidden = tf.keras.layers.Conv2D(filters=int(filters), kernel_size=int(kernel_size), strides=int(stride),
+                                                padding=padding, use_bias=(layer_params[0] == 'C'),
+                                                data_format='channels_last')(hidden)
+                if layer_params[0] == 'CB':
+                    hidden = tf.keras.layers.BatchNormalization(axis=-1)(hidden)
+                hidden = tf.keras.activations.relu(hidden)
+
+            elif layer_params[0] == 'M':
+                _, kernel_size, stride = layer_params
+                hidden = tf.keras.layers.MaxPool2D(pool_size=int(kernel_size), strides=int(stride),
+                                                   data_format='channels_last')(hidden)
+
+            elif layer_params[0] == 'R':
+                hidden += self.create_cnn(res_blocks.pop(0)[1:-1], hidden)
+
+            elif layer_params[0] == 'F':
+                hidden = tf.keras.layers.Flatten(data_format='channels_last')(hidden)
+
+            elif layer_params[0] == 'H':
+                _, hidden_layer_size = layer_params
+                hidden = tf.keras.layers.Dense(units=int(hidden_layer_size), activation=tf.nn.relu)(hidden)
+
+            elif layer_params[0] == 'D':
+                _, dropout_rate = layer_params
+                hidden = tf.keras.layers.Dropout(rate=float(dropout_rate))(hidden)
+
+        return hidden
 
 
 if __name__ == "__main__":
