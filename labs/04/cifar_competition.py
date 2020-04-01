@@ -78,10 +78,10 @@ class Network:
         dev = tf.data.Dataset.from_tensor_slices((cifar.dev.data["images"],
                                                   tf.one_hot(cifar.dev.data["labels"].ravel(), CIFAR10.LABELS)))
         dev = dev.batch(args.batch_size)
-        self._model.fit(train,
-                        epochs=args.epochs,
-                        validation_data=dev,
-                        callbacks=self._callbacks)
+        self.model_history = self._model.fit(train,
+                                             epochs=args.epochs,
+                                             validation_data=dev,
+                                             callbacks=self._callbacks)
 
     def test(self, cifar, args):
         test = tf.data.Dataset.from_tensor_slices(cifar.test.data["images"])
@@ -90,8 +90,9 @@ class Network:
             for probs in self._model.predict(test):
                 print(np.argmax(probs), file=out_file)
 
-    def save(self, args):
-        self._model.save(os.path.join(args.logdir, "model.h5"), include_optimizer=False)
+    def save(self, args, curr_date):
+        self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
+                                      format(curr_date,self.model_history.history['val_accuracy'][-1])), include_optimizer=False)
 
     @staticmethod
     def train_augment(image, label):
@@ -236,10 +237,11 @@ if __name__ == "__main__":
     if not args.verbose:
         os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-    # Create logdir name
+    # Create logdir
+    curr_date = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     args.logdir = os.path.join("logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
-        datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        curr_date,
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))
     ))
 
@@ -256,6 +258,6 @@ if __name__ == "__main__":
         cifar_network = Network(args)
         cifar_network.train(cifar, args)
         cifar_network.test(cifar, args)
-        cifar_network.save(args)
+        cifar_network.save(args, curr_date)
 
 
