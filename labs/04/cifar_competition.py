@@ -63,14 +63,15 @@ class Network:
         return optimizer
 
     def train(self, cifar, args):
+
         train = tf.data.Dataset.from_tensor_slices((cifar.train.data["images"],
-                                                    tf.one_hot(cifar.train.data["labels"], CIFAR10.LABELS)))
+                                                    tf.one_hot(cifar.train.data["labels"].ravel(), CIFAR10.LABELS)))
         train = train.shuffle(5000, seed=args.seed)
         train = train.map(self.train_augment)
         train = train.batch(args.batch_size)
 
         dev = tf.data.Dataset.from_tensor_slices((cifar.dev.data["images"],
-                                                  tf.one_hot(cifar.dev.data["labels"], CIFAR10.LABELS)))
+                                                  tf.one_hot(cifar.dev.data["labels"].ravel(), CIFAR10.LABELS)))
         dev = dev.batch(args.batch_size)
         self._model.fit(train,
                         epochs=args.epochs,
@@ -107,9 +108,9 @@ class Network:
         elif args.resnet == '152':
             resnet = tf.keras.applications.resnet_v2.ResNet152V2(include_top=False, weights=args.resnet_weights)
 
-        # print(len(resnet.layers))
-        # for layer in resnet.layers[:-args.num_ft]:
-        #     layer.trainable = False
+        # freeze part of the network
+        for layer in resnet.layers[:-int(len(resnet.layers)*args.freeze)]:
+            layer.trainable = False
 
         return resnet.output
 
@@ -169,7 +170,7 @@ if __name__ == "__main__":
     parser.add_argument("--cnn", default="GA", type=str, help="Define architucture of the network as in mnist_cnn.py")
     # Regularization parameters
     parser.add_argument("--l2", default=0, type=float, help="L2 regularization.")
-    parser.add_argument("--label-smoothing", default=0, type=float, help="Label smoothing.")
+    parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
@@ -178,7 +179,7 @@ if __name__ == "__main__":
     # Transfer learning with resnet
     parser.add_argument("--resnet", default=None, type=str, help="Use resnet V2 model to use")
     parser.add_argument("--resnet-weights", default=None, type=str, help="use 'imagenet' to apply pretrained weights")
-    #parser.add_argument("--num-ft", default=10, type=int, help="Number of top leayers to be fine tuned.")
+    parser.add_argument("--freeze", default=0., type=float, help="Percentage of frozen layers.")
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
