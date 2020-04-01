@@ -24,7 +24,7 @@ class Network:
         outputs = tf.keras.layers.Dense(CIFAR10.LABELS, activation=tf.nn.softmax)(hidden)
 
         self._model = tf.keras.Model(inputs=inputs, outputs=outputs)
-
+        self._callbacks = []
         self._optimizer = self.get_optimizer(args)
 
         self._model.compile(
@@ -32,10 +32,10 @@ class Network:
             loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
             metrics=[tf.keras.metrics.CategoricalAccuracy(name="accuracy")],
         )
-        self._callbacks = []
+
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=3))
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10))
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
@@ -43,12 +43,17 @@ class Network:
         if args.decay == 'polynomial':
             learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
                                                                              decay_steps=decay_steps,
-                                                                             end_learning_rate=learning_rate_final)
+                                                                             end_learning_rate=args.learning_rate_final)
         elif args.decay == 'exponential':
             decay_rate = learning_rate_final / args.learning_rate
             learning_rate_schedule = tf.optimizers.schedules.ExponentialDecay(args.learning_rate,
                                                                               decay_steps=decay_steps,
                                                                               decay_rate=decay_rate, staircase=False)
+        elif args.decay == "onplateau":
+            learning_rate_schedule = args.learning_rate
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5,
+                                                                        min_lr=args.learning_rate_final))
+
         else:
             learning_rate_schedule = args.learning_rate
 
