@@ -84,6 +84,9 @@ class Network:
             for probs in self._model.predict(test):
                 print(np.argmax(probs), file=out_file)
 
+    def save(self, args):
+        self._model.save(os.path.join(args.logdir, "model.h5"), include_optimizer=False)
+
     @staticmethod
     def train_augment(image, label):
         if tf.random.uniform([]) >= 0.5:
@@ -103,6 +106,10 @@ class Network:
                                                                  input_tensor=inputs)
         elif args.resnet == '152':
             resnet = tf.keras.applications.resnet_v2.ResNet152V2(include_top=False, weights=args.resnet_weights)
+
+        # print(len(resnet.layers))
+        # for layer in resnet.layers[:-args.num_ft]:
+        #     layer.trainable = False
 
         return resnet.output
 
@@ -170,8 +177,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
     # Transfer learning with resnet
     parser.add_argument("--resnet", default=None, type=str, help="Use resnet V2 model to use")
-    parser.add_argument("--resnet-weights", default='imagenet', type=str, help="use 'imagenet' to apply pretrained weights")
-
+    parser.add_argument("--resnet-weights", default=None, type=str, help="use 'imagenet' to apply pretrained weights")
+    #parser.add_argument("--num-ft", default=10, type=int, help="Number of top leayers to be fine tuned.")
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
@@ -200,4 +207,6 @@ if __name__ == "__main__":
     cifar_network = Network(args)
     cifar_network.train(cifar, args)
     cifar_network.test(cifar, args)
+    cifar_network.save(args)
+
 
