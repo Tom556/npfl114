@@ -162,10 +162,47 @@ class Network:
 
         return hidden
 
+class NetworkEnsemble():
+
+    def __init__(self, args):
+        self.ensemble_dir = args.ensemble_dir
+
+    def predict(self, args, cifar):
+        self.dev_res = np.zeros((len(cifar.dev.data["images"]), CIFAR10.LABELS))
+        self.test_res = np.zeros((len(cifar.test.data["images"]), CIFAR10.LABELS))
+
+        dev = tf.data.Dataset.from_tensor_slices(cifar.dev.data["images"])
+        dev = dev.batch(args.batch_size)
+
+        test = tf.data.Dataset.from_tensor_slices(cifar.test.data["images"])
+        test = test.batch(args.batch_size)
+
+        num_model = 0
+        for model_h5 in os.listdir(self.ensemble_dir):
+            if model_h5.endswith('.h5'):
+                num_model += 1
+                print(model_h5)
+                model = tf.keras.models.load_model(os.path.join(self.ensemble_dir,model_h5))
+                self.dev_res += model.predict(dev)
+                self.test_res += model.predict(test)
+
+        if num_model:
+            self.dev_res /= num_model
+            self.test_res /= num_model
+
+    def evaluate(self, cifar):
+        dev_acc = tf.reduce_mean(tf.keras.metrics.sparse_categorical_accuracy(cifar.dev.data['labels'], self.dev_res))
+        print("Validation accuarcy: {:.4f}".format(dev_acc.numpy()))
+        with open(os.path.join(self.ensemble_dir, "cifar_competition_test.txt"), "w", encoding="utf-8") as out_file:
+            for probs in self.test_res:
+                print(np.argmax(probs), file=out_file)
+
 
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
+    # Use ensemble of pre-trained models
+    parser.add_argument("--ensemble-dir", default=None, type=str, help="Use ensemble of pre-trained models.")
     # Basic training arguments
     parser.add_argument("--batch-size", default=None, type=int, help="Batch size.")
     parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
@@ -176,6 +213,7 @@ if __name__ == "__main__":
     # Regularization parameters
     parser.add_argument("--l2", default=0, type=float, help="L2 regularization.")
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
+    #parser.add_argument("--dropout", default=0, type=float, help="Dropout before the output layer.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
@@ -210,9 +248,14 @@ if __name__ == "__main__":
 
     args.train_size = cifar.train.size
 
-    cifar_network = Network(args)
-    cifar_network.train(cifar, args)
-    cifar_network.test(cifar, args)
-    cifar_network.save(args)
+    if args.ensemble_dir:
+        ensemble = NetworkEnsemble(args)
+        ensemble.predict(args, cifar)
+        ensemble.evaluate(cifar)
+    else:
+        cifar_network = Network(args)
+        cifar_network.train(cifar, args)
+        cifar_network.test(cifar, args)
+        cifar_network.save(args)
 
 
