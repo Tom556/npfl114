@@ -21,7 +21,8 @@ class Network:
 
         hidden = self.add_cnn(args, args.cnn, hidden)
         # Add the final output layer
-        outputs = tf.keras.layers.Dense(CIFAR10.LABELS, activation=tf.nn.softmax)(hidden)
+        outputs = tf.keras.layers.Dense(CIFAR10.LABELS, activation=tf.nn.softmax,
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
 
         self._model = tf.keras.Model(inputs=inputs, outputs=outputs)
         self._callbacks = []
@@ -73,11 +74,12 @@ class Network:
                                                     tf.one_hot(cifar.train.data["labels"].ravel(), CIFAR10.LABELS)))
         train = train.shuffle(5000, seed=args.seed)
         train = train.map(self.train_augment)
-        train = train.batch(args.batch_size)
+        train = train.batch(args.batch_size).prefetch(1)
 
         dev = tf.data.Dataset.from_tensor_slices((cifar.dev.data["images"],
                                                   tf.one_hot(cifar.dev.data["labels"].ravel(), CIFAR10.LABELS)))
-        dev = dev.batch(args.batch_size)
+        dev = dev.batch(args.batch_size).prefetch(1)
+
         self.model_history = self._model.fit(train,
                                              epochs=args.epochs,
                                              validation_data=dev,
@@ -131,7 +133,8 @@ class Network:
                 _, filters, kernel_size, stride, padding = layer_params
                 hidden = tf.keras.layers.Conv2D(filters=int(filters), kernel_size=int(kernel_size), strides=int(stride),
                                                 padding=padding, use_bias=(layer_params[0] == 'C'),
-                                                data_format='channels_last')(hidden)
+                                                data_format='channels_last',
+                                                kernel_regularizer = tf.keras.regularizers.l2(args.l2))(hidden)
                 if layer_params[0] == 'CB':
                     hidden = tf.keras.layers.BatchNormalization(axis=-1)(hidden)
                 hidden = tf.keras.activations.relu(hidden)
@@ -139,7 +142,7 @@ class Network:
             elif layer_params[0] == 'M':
                 _, kernel_size, stride = layer_params
                 hidden = tf.keras.layers.MaxPool2D(pool_size=int(kernel_size), strides=int(stride),
-                                                   data_format='channels_last')(hidden)
+                                                   data_format='channels_last', )(hidden)
 
             elif layer_params == 'GM':
                 hidden = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last')(hidden)
@@ -155,7 +158,8 @@ class Network:
 
             elif layer_params[0] == 'H':
                 _, hidden_layer_size = layer_params
-                hidden = tf.keras.layers.Dense(units=int(hidden_layer_size), activation=tf.nn.relu)(hidden)
+                hidden = tf.keras.layers.Dense(units=int(hidden_layer_size), activation=tf.nn.relu,
+                                               kernel_regularizer = tf.keras.regularizers.l2(args.l2))(hidden)
 
             elif layer_params[0] == 'D':
                 _, dropout_rate = layer_params
@@ -212,9 +216,8 @@ if __name__ == "__main__":
     # Network architecture parameters
     parser.add_argument("--cnn", default="GA", type=str, help="Define architucture of the network as in mnist_cnn.py")
     # Regularization parameters
-    parser.add_argument("--l2", default=0, type=float, help="L2 regularization.")
+    parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
-    #parser.add_argument("--dropout", default=0, type=float, help="Dropout before the output layer.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
@@ -224,6 +227,7 @@ if __name__ == "__main__":
     parser.add_argument("--resnet", default=None, type=str, help="Use resnet V2 model to use")
     parser.add_argument("--resnet-weights", default=None, type=str, help="use 'imagenet' to apply pretrained weights")
     parser.add_argument("--freeze", default=0., type=float, help="Percentage of frozen layers.")
+
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
