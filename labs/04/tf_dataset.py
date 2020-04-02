@@ -78,7 +78,7 @@ if __name__ == "__main__":
     def train_augment(image, label):
         if tf.random.uniform([]) >= 0.5:
             image = tf.image.flip_left_right(image)
-        image = tf.image.resize_with_crop_or_pad(image, CIFAR10.H + 6, CIFAR10.W + 6)
+        #image = tf.image.resize_with_crop_or_pad(image, CIFAR10.H + 6, CIFAR10.W + 6)
         image = tf.image.resize(image, [tf.random.uniform([], minval=CIFAR10.H, maxval=CIFAR10.H + 12, dtype=tf.int32),
                                         tf.random.uniform([], minval=CIFAR10.W, maxval=CIFAR10.W + 12, dtype=tf.int32)])
         image = tf.image.random_crop(image, [CIFAR10.H, CIFAR10.W, CIFAR10.C])

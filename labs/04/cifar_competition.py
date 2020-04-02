@@ -9,6 +9,18 @@ import tensorflow as tf
 
 from cifar10 import CIFAR10
 
+
+CNN_STRUCTURES = {
+    'CNN': "CB-32-3-1-same,CB-32-3-1-same,M-2-2,D-0.2,CB-64-3-1-same,CB-64-3-1-same,"
+           "M-2-2,D-0.3,CB-128-3-1-same,CB-128-3-1-same,M-2-2,D-0.4,F",
+
+    'ResNet-34': 'CB-64-5-2-same,M-3-2,' + 3*'R-[PCB-64-3-1-same,PCB-64-3-1-same],D-0.2,' +
+                 'PCB-128-3-2-same,PCB-128-3-1-same,' + 3*'R-[PCB-128-3-1-same,PCB-128-3-1-same],D-0.3,' +
+                 'PCB-256-3-2-same,PCB-256-3-1-same,' + 5*'R-[PCB-256-3-1-same,PCB-256-3-1-same],D-0.4,' +
+                 'PCB-512-3-2-same,PCB-512-3-1-same,' + 2*'R-[PCB-512-3-1-same,PCB-512-3-1-same],D-0.4,' + 'GA'
+}
+
+
 class Network:
     def __init__(self, args):
 
@@ -36,7 +48,8 @@ class Network:
 
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10))
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10,
+                                                                restore_best_weights=True))
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
@@ -124,8 +137,9 @@ class Network:
 
     def add_cnn(self,args, parameters, inputs):
         hidden = inputs
-        res_blocks = re.findall('\[.*\]', parameters)
-        params = re.sub('\-\[.*\]', '', parameters)
+        regex_blocks = re.compile('-\[.*?\]')
+        res_blocks = re.findall(regex_blocks, parameters)
+        params = re.sub(regex_blocks, '', parameters)
 
         for layer_params in params.split(','):
             layer_params = layer_params.split("-")
@@ -139,6 +153,15 @@ class Network:
                     hidden = tf.keras.layers.BatchNormalization(axis=-1)(hidden)
                 hidden = tf.keras.activations.relu(hidden)
 
+            elif layer_params[0] == "PCB":
+                _, filters, kernel_size, stride, padding = layer_params
+                hidden = tf.keras.activations.relu(hidden)
+                hidden = tf.keras.layers.BatchNormalization(axis=-1)(hidden)
+                hidden = tf.keras.layers.Conv2D(filters=int(filters), kernel_size=int(kernel_size), strides=int(stride),
+                                                padding=padding, use_bias=(layer_params[0] == 'C'),
+                                                data_format='channels_last',
+                                                kernel_regularizer = tf.keras.regularizers.l2(args.l2))(hidden)
+
             elif layer_params[0] == 'M':
                 _, kernel_size, stride = layer_params
                 hidden = tf.keras.layers.MaxPool2D(pool_size=int(kernel_size), strides=int(stride),
@@ -151,7 +174,7 @@ class Network:
                 hidden = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last')(hidden)
 
             elif layer_params[0] == 'R':
-                hidden += self.add_cnn(args, res_blocks.pop(0)[1:-1], hidden)
+                hidden += self.add_cnn(args, res_blocks.pop(0)[2:-1], hidden)
 
             elif layer_params[0] == 'F':
                 hidden = tf.keras.layers.Flatten(data_format='channels_last')(hidden)
@@ -248,6 +271,9 @@ if __name__ == "__main__":
         curr_date,
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))
     ))
+
+    if args.cnn in CNN_STRUCTURES:
+        args.cnn = CNN_STRUCTURES[args.cnn]
 
     # Load data
     cifar = CIFAR10()
