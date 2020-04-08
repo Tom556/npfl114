@@ -10,14 +10,152 @@ import tensorflow as tf
 from cags_dataset import CAGS
 import efficient_net
 
+
+class Network:
+    def __init__(self, args):
+
+        if args.efficient_net:
+            base_model = self.efficient_net(args)
+        else:
+            base_model = tf.keras.Sequential([tf.keras.layers.Input(shape=[CAGS.H, CAGS.W, CAGS.C])])
+
+        top_model = tf.keras.models.Sequential()
+        # top_model.add(tf.keras.layers.GlobalAveragePooling2D())
+        top_model.add(tf.keras.layers.Dropout(args.dropout))
+        top_model.add(tf.keras.layers.Dense(len(CAGS.LABELS), activation=tf.nn.softmax,
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2)))
+
+        self._model = tf.keras.Model(inputs=base_model.input, outputs=top_model(base_model.output[0]))
+
+        self._callbacks = []
+        self._optimizer = self.get_optimizer(args)
+
+        self._model.compile(
+            optimizer=self._optimizer,
+            loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
+            metrics=[tf.keras.metrics.CategoricalAccuracy(name="accuracy")],
+        )
+
+        self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
+                                                                update_freq=100, profile_batch=0))
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10,
+                                                                restore_best_weights=True))
+
+    def get_optimizer(self, args):
+        learning_rate_final = args.learning_rate_final
+        decay_steps = int(57463494 * args.epochs / args.batch_size)
+        if args.decay == 'polynomial':
+            learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
+                                                                             decay_steps=decay_steps,
+                                                                             end_learning_rate=args.learning_rate_final)
+        elif args.decay == 'exponential':
+            decay_rate = learning_rate_final / args.learning_rate
+            learning_rate_schedule = tf.optimizers.schedules.ExponentialDecay(args.learning_rate,
+                                                                              decay_steps=decay_steps,
+                                                                              decay_rate=decay_rate, staircase=False)
+        elif args.decay == "onplateau":
+            learning_rate_schedule = args.learning_rate
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5,
+                                                                        min_lr=args.learning_rate_final))
+
+        else:
+            learning_rate_schedule = args.learning_rate
+
+        optimizer = None
+        if args.optimizer == 'SGD':
+            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule)
+        elif args.optimizer == "RMSProp":
+            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule)
+        elif args.optimizer == 'Adam':
+            optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
+
+        return optimizer
+
+    def train(self, cags, args):
+
+        train = tf.data.TFRecordDataset(cags.train)
+        train = train.map(CAGS.parse)
+        train = train.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        train = train.shuffle(5000, seed=args.seed)
+        # train = train.map(self.train_augment)
+        train = train.batch(args.batch_size).prefetch(args.threads)
+
+        dev = tf.data.TFRecordDataset(cags.train)
+        dev = dev.map(CAGS.parse)
+        dev = dev.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        dev = dev.batch(args.batch_size).prefetch(args.threads)
+
+        self.model_history = self._model.fit(train,
+                                             epochs=args.epochs,
+                                             validation_data=dev,
+                                             callbacks=self._callbacks)
+
+    def test(self, cags, args):
+        test = tf.data.Dataset.TFRecordDataset(cags.test)
+        test = test.map(self.parse_tfrecord)
+        test = test.map(lambda x: x["image"])
+        test = test.batch(args.batch_size)
+        with open(os.path.join(args.logdir, "cags_classification.txt"), "w", encoding="utf-8") as out_file:
+            for probs in self._model.predict(test):
+                print(np.argmax(probs), file=out_file)
+
+    def save(self, args, curr_date):
+        self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
+                                      format(curr_date,self.model_history.history['val_accuracy'][-1])), include_optimizer=False)
+
+    @staticmethod
+    def parse_tfrecord(example):
+        example = CAGS.parse(example)
+        return example["image"], example["label"]  # tf.one_hot(example["label"], depth=len(CAGS.LABELS))
+
+    @classmethod
+    def train_augment(cls, image, label):
+        if tf.random.uniform([]) >= 0.5:
+            image = tf.image.flip_left_right(image)
+        image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 6, CAGS.W + 6)
+        image = tf.image.resize(image, [tf.random.uniform([], minval=CAGS.H, maxval=CAGS.H + 12, dtype=tf.int32),
+                                        tf.random.uniform([], minval=CAGS.W, maxval=CAGS.W + 12, dtype=tf.int32)])
+        image = tf.image.random_crop(image, [CAGS.H, CAGS.W, CAGS.C])
+        return image, label
+
+    def efficient_net(self, args):
+
+        efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False)
+        num_layers = len(efficientnet_b0.layers)
+
+        for lidx, layer in enumerate(efficientnet_b0.layers):
+            if lidx/num_layers >= args.freeze \
+                    and any( sub_name in layer.name for sub_name in ('conv', 'bn', 'excite', 'reduce')):
+                layer.trainable = True
+            else:
+                layer.trainable = False
+
+        return efficientnet_b0
+
+
+
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
-    # TODO: Define reasonable defaults and optionally more parameters
-    parser.add_argument("--batch_size", default=None, type=int, help="Batch size.")
+    parser.add_argument("--ensemble-dir", default=None, type=str, help="Use ensemble of pre-trained models.")
+    # Basic training arguments
+    parser.add_argument("--batch-size", default=None, type=int, help="Batch size.")
     parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+    # Regularization parameters
+    parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
+    parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
+    parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    # Optimizer parameters
+    parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
+    parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
+    parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
+    parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
+    # Transfer learning with resnet
+    parser.add_argument("--efficient-net", action="store_true", help="Use EfficientNet network.")
+    parser.add_argument("--freeze", default=0., type=float, help="Percentage of frozen layers.")
+
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
@@ -31,25 +169,21 @@ if __name__ == "__main__":
     if not args.verbose:
         os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-    # Create logdir name
+    # Create logdir
+    curr_date = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     args.logdir = os.path.join("logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
-        datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        curr_date,
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))
     ))
 
     # Load the data
     cags = CAGS()
 
-    # Load the EfficientNet-B0 model
-    efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False)
+    # CAGS_TABLE = tf.lookup.StaticVocabularyTable(
+    #     tf.lookup.KeyValueTensorInitializer(CAGS.LABELS, tf.range(len(CAGS.LABELS), dtype=tf.int64)), 1)
 
-    # TODO: Create the model and train it
-    model = ...
-
-    # Generate test set annotations, but in args.logdir to allow parallel execution.
-    with open(os.path.join(args.logdir, "cags_classification.txt"), "w", encoding="utf-8") as out_file:
-        # TODO: Predict the probabilities on the test set
-        test_probabilities = model.predict(...)
-        for probs in test_probabilities:
-            print(np.argmax(probs), file=out_file)
+    cifar_network = Network(args)
+    cifar_network.train(cags, args)
+    cifar_network.test(cags, args)
+    cifar_network.save(args, curr_date)
