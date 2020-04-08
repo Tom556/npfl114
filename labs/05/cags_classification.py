@@ -55,7 +55,7 @@ class Network:
                                                                               decay_rate=decay_rate, staircase=False)
         elif args.decay == "onplateau":
             learning_rate_schedule = args.learning_rate
-            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5,
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5,
                                                                         min_lr=args.learning_rate_final))
 
         else:
@@ -63,9 +63,9 @@ class Network:
 
         optimizer = None
         if args.optimizer == 'SGD':
-            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule)
+            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=args.momentum)
         elif args.optimizer == "RMSProp":
-            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule)
+            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule, momentum=args.momentum)
         elif args.optimizer == 'Adam':
             optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
 
@@ -73,16 +73,16 @@ class Network:
 
     def train(self, cags, args):
 
-        train = tf.data.TFRecordDataset(cags.train)
+        train = cags.train
         train = train.map(CAGS.parse)
-        train = train.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        train = train.map(lambda x: (x["image"], x["label"])) #tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
         train = train.shuffle(5000, seed=args.seed)
-        # train = train.map(self.train_augment)
+        train = train.map(self.train_augment)
         train = train.batch(args.batch_size).prefetch(args.threads)
 
-        dev = tf.data.TFRecordDataset(cags.train)
+        dev = cags.dev
         dev = dev.map(CAGS.parse)
-        dev = dev.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        dev = dev.map(lambda x: (x["image"], x["label"])) #tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
         dev = dev.batch(args.batch_size).prefetch(args.threads)
 
         self.model_history = self._model.fit(train,
@@ -91,8 +91,8 @@ class Network:
                                              callbacks=self._callbacks)
 
     def test(self, cags, args):
-        test = tf.data.Dataset.TFRecordDataset(cags.test)
-        test = test.map(self.parse_tfrecord)
+        test = cags.test
+        test = test.map(CAGS.parse)
         test = test.map(lambda x: x["image"])
         test = test.batch(args.batch_size)
         with open(os.path.join(args.logdir, "cags_classification.txt"), "w", encoding="utf-8") as out_file:
@@ -149,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
+    parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
     parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
     parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
