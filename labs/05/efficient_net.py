@@ -114,8 +114,8 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                    use_bias=False,
                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
                                    name=prefix + 'expand_conv')(inputs)
-        # x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'expand_bn')(x)
-        x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'expand_gn')(x)
+        x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'expand_bn')(x)
+        # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'expand_gn')(x)
         x = tf.keras.layers.Activation(activation, name=prefix + 'expand_activation')(x)
     else:
         x = inputs
@@ -127,8 +127,8 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                         use_bias=False,
                                         depthwise_initializer=CONV_KERNEL_INITIALIZER,
                                         name=prefix + 'dwconv')(x)
-    # x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'bn')(x)
-    x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'gn')(x)
+    x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'gn')(x)
     x = tf.keras.layers.Activation(activation, name=prefix + 'activation')(x)
 
     # Squeeze and Excitation phase
@@ -160,8 +160,8 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name=prefix + 'project_conv')(x)
-    # x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'project_bn')(x)
-    x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'project_gn')(x)
+    x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'project_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'project_gn')(x)
     if block_args.id_skip and all(
             s == 1 for s in block_args.strides
     ) and block_args.input_filters == block_args.output_filters:
@@ -251,8 +251,8 @@ def EfficientNet(width_coefficient,
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name='stem_conv')(x)
-    # x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='stem_bn')(x)
-    x = tfa.layers.GroupNormalization(axis=bn_axis, name='stem_gn')(x)
+    x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='stem_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name='stem_gn')(x)
     x = tf.keras.layers.Activation(activation, name='stem_activation')(x)
 
     # Build blocks
@@ -301,8 +301,8 @@ def EfficientNet(width_coefficient,
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name='top_conv')(x)
-    # x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='top_bn')(x)
-    x = tfa.layers.GroupNormalization(axis=bn_axis, name='top_gn')(x)
+    x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='top_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name='top_gn')(x)
     x = tf.keras.layers.Activation(activation, name='top_activation')(x)
     outputs.append(x)
 

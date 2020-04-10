@@ -11,6 +11,13 @@ from cags_dataset import CAGS
 import efficient_net
 
 
+# this is needed to load Efficient NET keras model
+def swish_activation(x):
+    return (tf.keras.activations.sigmoid(x) * x)
+
+tf.keras.utils.get_custom_objects().update({'swish': tf.keras.layers.Activation(swish_activation)})
+
+
 class Network:
     def __init__(self, args):
 
@@ -137,7 +144,7 @@ class Network:
         num_layers = len(efficientnet_b0.layers)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
-            if ('conv' in layer.name or 'excite' in layer.name or 'reduce' in layer.name) \
+            if ('conv' in layer.name or 'expand' in layer.name or 'reduce' in layer.name) \
                     and lidx/num_layers >= args.freeze:
                 layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
                 layer.trainable = True
@@ -147,6 +154,53 @@ class Network:
                 layer.trainable = False
 
         return efficientnet_b0
+
+class NetworkEnsemble():
+
+    def __init__(self, cags, args):
+        self.ensemble_dir = args.ensemble_dir
+
+        self.dev_labels = tf.constant([lab.numpy() for lab in cags.dev.map(CAGS.parse).map(lambda x: x["label"])], tf.float32)
+        # print(type(self.dev_labels[0]))
+        dev_len = len(self.dev_labels)
+        self.dev_res = np.zeros((dev_len, len(CAGS.LABELS)), np.float32)
+
+        test_len = sum(1 for _ in cags.test.map(CAGS.parse))
+        self.test_res = np.zeros((test_len, len(CAGS.LABELS)), np.float32)
+
+    def predict(self, cags, args):
+
+        dev = cags.dev
+        dev = dev.map(CAGS.parse)
+        dev = dev.map(lambda x: x["image"])
+        dev = dev.batch(args.batch_size)
+
+        test = cags.test
+        test = test.map(CAGS.parse)
+        test = test.map(lambda x: x["image"])
+        test = test.batch(args.batch_size)
+
+        num_model = 0
+        for model_h5 in os.listdir(self.ensemble_dir):
+            if model_h5.endswith('.h5'):
+                num_model += 1
+                print(model_h5)
+                model = tf.keras.models.load_model(os.path.join(self.ensemble_dir,model_h5))
+                self.dev_res += model.predict(dev)
+                self.test_res += model.predict(test)
+
+        if num_model:
+            self.dev_res /= num_model
+            self.test_res /= num_model
+
+    def evaluate(self):
+        dev_acc = tf.reduce_mean(tf.keras.metrics.sparse_categorical_accuracy(self.dev_labels, self.dev_res))
+        with open(os.path.join(self.ensemble_dir, "dev_out"), "w", encoding="utf-8") as out_file:
+            print("{:.4f}".format(dev_acc.numpy()), file=out_file)
+        with open(os.path.join(self.ensemble_dir, "cags_competition_test.txt"), "w", encoding="utf-8") as out_file:
+            for probs in self.test_res:
+                print(np.argmax(probs), file=out_file)
+
 
 
 
@@ -200,7 +254,13 @@ if __name__ == "__main__":
     # CAGS_TABLE = tf.lookup.StaticVocabularyTable(
     #     tf.lookup.KeyValueTensorInitializer(CAGS.LABELS, tf.range(len(CAGS.LABELS), dtype=tf.int64)), 1)
 
-    cifar_network = Network(args)
-    cifar_network.train(cags, args)
-    cifar_network.test(cags, args)
-    cifar_network.save(args, curr_date)
+    if args.ensemble_dir:
+        network_ensemble = NetworkEnsemble(cags, args)
+        network_ensemble.predict(cags, args)
+        network_ensemble.evaluate()
+
+    else:
+        cags_network = Network(args)
+        cags_network.train(cags, args)
+        cags_network.test(cags, args)
+        cags_network.save(args, curr_date)
