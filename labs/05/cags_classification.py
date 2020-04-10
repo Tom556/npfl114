@@ -101,7 +101,7 @@ class Network:
 
     def save(self, args, curr_date):
         self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
-                                      format(curr_date,self.model_history.history['val_accuracy'][-1])), include_optimizer=False)
+                                      format(curr_date, max(self.model_history.history['val_accuracy'][-10:]))), include_optimizer=False)
 
     @staticmethod
     def train_augment(image, label, cut_out=16):
@@ -137,12 +137,12 @@ class Network:
         num_layers = len(efficientnet_b0.layers)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
-            if lidx/num_layers >= args.freeze \
-                    and any( sub_name in layer.name for sub_name in ('conv', 'bn', 'excite', 'reduce')):
+            if ('conv' in layer.name or 'excite' in layer.name or 'reduce' in layer.name) \
+                    and lidx/num_layers >= args.freeze:
+                layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
                 layer.trainable = True
-
-                if 'bn' not in layer.name:
-                    layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
+            elif ('drop' in layer.name or 'bg' in layer.name or 'gn' in layer.name):
+                layer.trainable = True
             else:
                 layer.trainable = False
 
