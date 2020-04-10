@@ -80,4 +80,4 @@ if __name__ == "__main__":
     network = Network(args)
     network.train(mnist, args)
     network.test(mnist, args)
-    network.model.save(os.path.join(args.logdir, "mnist_web_model.h5"), include_optimizer=False)
+    network._model.save(os.path.join(args.logdir, "mnist_web_model.h5"), include_optimizer=False)

@@ -43,7 +43,7 @@ class Network:
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
-        decay_steps = int(57463494 * args.epochs / args.batch_size)
+        decay_steps = int(2142 * args.epochs / args.batch_size)
         if args.decay == 'polynomial':
             learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
                                                                              decay_steps=decay_steps,
@@ -75,14 +75,14 @@ class Network:
 
         train = cags.train
         train = train.map(CAGS.parse)
-        train = train.map(lambda x: (x["image"], x["label"])) #tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        train = train.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
         train = train.shuffle(5000, seed=args.seed)
         train = train.map(self.train_augment)
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         dev = cags.dev
         dev = dev.map(CAGS.parse)
-        dev = dev.map(lambda x: (x["image"], x["label"])) #tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
+        dev = dev.map(lambda x: (x["image"], tf.one_hot(x["label"], depth=len(CAGS.LABELS))))
         dev = dev.batch(args.batch_size).prefetch(args.threads)
 
         self.model_history = self._model.fit(train,
@@ -104,18 +104,31 @@ class Network:
                                       format(curr_date,self.model_history.history['val_accuracy'][-1])), include_optimizer=False)
 
     @staticmethod
-    def parse_tfrecord(example):
-        example = CAGS.parse(example)
-        return example["image"], example["label"]  # tf.one_hot(example["label"], depth=len(CAGS.LABELS))
-
-    @classmethod
-    def train_augment(cls, image, label):
+    def train_augment(image, label, cut_out=16):
         if tf.random.uniform([]) >= 0.5:
             image = tf.image.flip_left_right(image)
         image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 6, CAGS.W + 6)
         image = tf.image.resize(image, [tf.random.uniform([], minval=CAGS.H, maxval=CAGS.H + 12, dtype=tf.int32),
                                         tf.random.uniform([], minval=CAGS.W, maxval=CAGS.W + 12, dtype=tf.int32)])
         image = tf.image.random_crop(image, [CAGS.H, CAGS.W, CAGS.C])
+
+        #cut_out
+
+        mask = np.ones((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
+        mean_pixels = np.zeros((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
+        #image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 2*cut_out, CAGS.W + 2*cut_out)
+        rnd_H = np.random.randint(CAGS.H + cut_out)
+        rnd_W = np.random.randint(CAGS.W + cut_out)
+
+        mask[rnd_H:rnd_H + cut_out, rnd_W + cut_out, :] = 0
+        mask = tf.constant(mask)
+        mask = tf.image.resize_with_crop_or_pad(mask, CAGS.H, CAGS.W)
+
+        mean_pixels[rnd_H:rnd_H + cut_out, rnd_W + cut_out, :] = np.array([0.15610054, 0.15610054, 0.15610054], np.float32)
+        mean_pixels = tf.constant(mean_pixels)
+        mean_pixels = tf.image.resize_with_crop_or_pad(mean_pixels, CAGS.H, CAGS.W)
+
+        image = image * mask + mean_pixels
         return image, label
 
     def efficient_net(self, args):
@@ -127,6 +140,9 @@ class Network:
             if lidx/num_layers >= args.freeze \
                     and any( sub_name in layer.name for sub_name in ('conv', 'bn', 'excite', 'reduce')):
                 layer.trainable = True
+
+                if 'bn' not in layer.name:
+                    layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
             else:
                 layer.trainable = False
 
