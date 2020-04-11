@@ -117,7 +117,7 @@ class Network:
 
     def save(self, args, curr_date):
         self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
-                                      format(curr_date, max(self.model_history.history['val_accuracy'][-10:]))), include_optimizer=False)
+                                      format(curr_date, max(self.model_history.history['val_iou'][-10:]))), include_optimizer=False)
 
     @staticmethod
     def train_augment(image, label, cut_out=16):
