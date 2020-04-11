@@ -251,9 +251,6 @@ if __name__ == "__main__":
     # Load the data
     cags = CAGS()
 
-    # CAGS_TABLE = tf.lookup.StaticVocabularyTable(
-    #     tf.lookup.KeyValueTensorInitializer(CAGS.LABELS, tf.range(len(CAGS.LABELS), dtype=tf.int64)), 1)
-
     if args.ensemble_dir:
         network_ensemble = NetworkEnsemble(cags, args)
         network_ensemble.predict(cags, args)
