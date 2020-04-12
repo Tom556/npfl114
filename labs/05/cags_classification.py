@@ -140,7 +140,7 @@ class Network:
 
     def efficient_net(self, args):
 
-        efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False)
+        efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False, drop_connect=args.drop_connect)
         num_layers = len(efficientnet_b0.layers)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
@@ -217,6 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
     parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    parser.add_argument("--drop-connect", default=0.2, type=float, help="Drop connection probability in efficient net.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")

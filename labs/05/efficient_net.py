@@ -338,6 +338,7 @@ def EfficientNet(width_coefficient,
 
 def EfficientNetB0(
         include_top=True,
+        drop_connect=0.2,
         weights='imagenet',
         input_tensor=None,
         input_shape=None,
@@ -346,6 +347,7 @@ def EfficientNetB0(
 ):
     return EfficientNet(
         1.0, 1.0, 224, 0.2,
+        drop_connect_rate=drop_connect,
         model_name='efficientnet-b0',
         include_top=include_top, weights=weights,
         input_tensor=input_tensor, input_shape=input_shape,
@@ -503,7 +505,7 @@ def EfficientNetL2(
 setattr(EfficientNetL2, '__doc__', EfficientNet.__doc__)
 
 
-def pretrained_efficientnet_b0(include_top):
+def pretrained_efficientnet_b0(include_top, drop_connect=0.2):
     url = "https://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/models/"
     path = "efficientnet-b0_noisy-student.h5"
 
@@ -511,4 +513,4 @@ def pretrained_efficientnet_b0(include_top):
         print("Downloading file {}...".format(path), file=sys.stderr)
         urllib.request.urlretrieve("{}/{}".format(url, path), filename=path)
 
-    return EfficientNetB0(include_top, weights="efficientnet-b0_noisy-student.h5")
+    return EfficientNetB0(include_top, drop_connect=drop_connect, weights="efficientnet-b0_noisy-student.h5")
