@@ -29,6 +29,8 @@ class Network:
 
         self._model = tf.keras.Model(inputs=base_model.input, outputs=output)
 
+        self.cut_out = args.cut_out
+
         self._callbacks = []
         self._optimizer = self.get_optimizer(args)
 
@@ -40,7 +42,7 @@ class Network:
 
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10,
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou', patience=20,
                                                                 restore_best_weights=True))
 
     def get_optimizer(self, args):
@@ -57,7 +59,7 @@ class Network:
                                                                               decay_rate=decay_rate, staircase=False)
         elif args.decay == "onplateau":
             learning_rate_schedule = args.learning_rate
-            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5,
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_iou', factor=0.2, patience=5,
                                                                         min_lr=args.learning_rate_final))
 
         else:
@@ -79,7 +81,7 @@ class Network:
         train = train.map(CAGS.parse)
         train = train.map(lambda x: (x["image"], x["mask"]))
         train = train.shuffle(5000, seed=args.seed)
-        # train = train.map(self.train_augment)
+        train = train.map(self.train_augment)
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         dev = cags.dev
@@ -117,39 +119,49 @@ class Network:
 
     def save(self, args, curr_date):
         self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
-                                      format(curr_date, max(self.model_history.history['val_iou'][-10:]))), include_optimizer=False)
+                                      format(curr_date, max(self.model_history.history['val_iou'][-20:]))), include_optimizer=False)
 
-    @staticmethod
-    def train_augment(image, label, cut_out=16):
+    def train_augment(self, image, out_mask):
         if tf.random.uniform([]) >= 0.5:
             image = tf.image.flip_left_right(image)
-        image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 6, CAGS.W + 6)
-        image = tf.image.resize(image, [tf.random.uniform([], minval=CAGS.H, maxval=CAGS.H + 12, dtype=tf.int32),
-                                        tf.random.uniform([], minval=CAGS.W, maxval=CAGS.W + 12, dtype=tf.int32)])
-        image = tf.image.random_crop(image, [CAGS.H, CAGS.W, CAGS.C])
+            out_mask = tf.image.flip_left_right(out_mask)
+        image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 32, CAGS.W + 32)
+
+        rnd_H_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
+        rnd_W_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
+        image = tf.image.resize(image, [CAGS.H + rnd_H_resize, CAGS.W + rnd_W_resize])
+        out_mask = tf.image.resize(out_mask, [CAGS.H + rnd_H_resize, CAGS.W + rnd_W_resize])
+
+        rnd_H_crop = tf.random.uniform([], minval=0, maxval=rnd_H_resize+1, dtype=tf.int32)
+        rnd_W_crop = tf.random.uniform([], minval=0, maxval=rnd_W_resize+1, dtype=tf.int32)
+
+        image = tf.image.crop_to_bounding_box(image, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
+        out_mask = tf.image.crop_to_bounding_box(out_mask, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
 
         #cut_out
+        if self.cut_out:
+            mask = np.ones((CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out, CAGS.C), np.float32)
+            mean_pixels = np.zeros((CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out, CAGS.C), np.float32)
+            #image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out)
+            rnd_H_cutout = np.random.randint(CAGS.H + self.cut_out)
+            rnd_W_cutout = np.random.randint(CAGS.W + self.cut_out)
 
-        mask = np.ones((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
-        mean_pixels = np.zeros((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
-        #image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 2*cut_out, CAGS.W + 2*cut_out)
-        rnd_H = np.random.randint(CAGS.H + cut_out)
-        rnd_W = np.random.randint(CAGS.W + cut_out)
+            mask[rnd_H_cutout:rnd_H_cutout + self.cut_out, rnd_W_cutout + self.cut_out, :] = 0
+            mask = tf.constant(mask)
+            mask = tf.image.resize_with_crop_or_pad(mask, CAGS.H, CAGS.W)
 
-        mask[rnd_H:rnd_H + cut_out, rnd_W + cut_out, :] = 0
-        mask = tf.constant(mask)
-        mask = tf.image.resize_with_crop_or_pad(mask, CAGS.H, CAGS.W)
+            mean_pixels[rnd_H_cutout:rnd_H_cutout + self.cut_out, rnd_W_cutout + self.cut_out, :] = np.array([0.15610054, 0.15610054, 0.15610054], np.float32)
+            mean_pixels = tf.constant(mean_pixels)
+            mean_pixels = tf.image.resize_with_crop_or_pad(mean_pixels, CAGS.H, CAGS.W)
 
-        mean_pixels[rnd_H:rnd_H + cut_out, rnd_W + cut_out, :] = np.array([0.15610054, 0.15610054, 0.15610054], np.float32)
-        mean_pixels = tf.constant(mean_pixels)
-        mean_pixels = tf.image.resize_with_crop_or_pad(mean_pixels, CAGS.H, CAGS.W)
+            image = image * mask + mean_pixels
+            out_mask = out_mask * mask
 
-        image = image * mask + mean_pixels
-        return image, label
+        return image, out_mask
 
     def efficient_net(self, args):
 
-        efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False)
+        efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False, drop_connect=args.drop_connect)
         num_layers = len(efficientnet_b0.layers)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
@@ -220,6 +232,9 @@ if __name__ == "__main__":
     parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
     parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    parser.add_argument("--drop-connect", default=0.2, type=float, help="Drop connection probability in efficient net.")
+    # Augmentation parameters
+    parser.add_argument("--cut-out", default=0, type=int, help="Size of cut out window.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")

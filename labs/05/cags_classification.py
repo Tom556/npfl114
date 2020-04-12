@@ -108,7 +108,7 @@ class Network:
 
     def save(self, args, curr_date):
         self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
-                                      format(curr_date, max(self.model_history.history['val_accuracy'][-10:]))), include_optimizer=False)
+                                      format(curr_date, max(self.model_history.history['val_accuracy'][-20:]))), include_optimizer=False)
 
     @staticmethod
     def train_augment(image, label, cut_out=16):
@@ -120,16 +120,13 @@ class Network:
         image = tf.image.random_crop(image, [CAGS.H, CAGS.W, CAGS.C])
 
         # random global properties
-        image = tf.image.random_brightness(image, 0.1)
         image = tf.image.random_jpeg_quality(image, 0.9, 1.0)
-        image = tf.image.random_hue(image, 0.1)
 
 
         #cut_out
 
         mask = np.ones((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
         mean_pixels = np.zeros((CAGS.H + 2*cut_out, CAGS.W + 2*cut_out, CAGS.C), np.float32)
-        #image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 2*cut_out, CAGS.W + 2*cut_out)
         rnd_H = np.random.randint(CAGS.H + cut_out)
         rnd_W = np.random.randint(CAGS.W + cut_out)
 
