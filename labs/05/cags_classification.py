@@ -45,7 +45,7 @@ class Network:
 
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10,
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=20,
                                                                 restore_best_weights=True))
 
     def get_optimizer(self, args):
@@ -118,6 +118,12 @@ class Network:
         image = tf.image.resize(image, [tf.random.uniform([], minval=CAGS.H, maxval=CAGS.H + 12, dtype=tf.int32),
                                         tf.random.uniform([], minval=CAGS.W, maxval=CAGS.W + 12, dtype=tf.int32)])
         image = tf.image.random_crop(image, [CAGS.H, CAGS.W, CAGS.C])
+
+        # random global properties
+        image = tf.image.random_brightness(image, 0.1)
+        image = tf.image.random_jpeg_quality(image, 0.9, 1.0)
+        image = tf.image.random_hue(image, 0.1)
+
 
         #cut_out
 
