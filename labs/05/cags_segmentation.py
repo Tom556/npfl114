@@ -23,11 +23,11 @@ CONV_KERNEL_INITIALIZER = {
 class Network:
     def __init__(self, args):
 
-        base_model = self.efficient_net(args)
+        self.base_model = self.efficient_net(args)
 
-        output = self.up_scale(base_model.input, base_model.output, args)
+        output = self.up_scale(self.base_model.input, self.base_model.output, args)
 
-        self._model = tf.keras.Model(inputs=base_model.input, outputs=output)
+        self._model = tf.keras.Model(inputs=self.base_model.input, outputs=output)
 
         self.cut_out = args.cut_out
 
@@ -89,8 +89,18 @@ class Network:
         dev = dev.map(lambda x: (x["image"], x["mask"]))
         dev = dev.batch(args.batch_size).prefetch(args.threads)
 
+        if args.pretrain_epochs:
+
+            self.model_history = self._model.fit(train,
+                                                 epochs=args.pretrain_epochs,
+                                                 validation_data=dev,
+                                                 callbacks=self._callbacks)
+
+            self.end_pretraining(args)
+
         self.model_history = self._model.fit(train,
-                                             epochs=args.epochs,
+                                             epochs=args.epochs - args.pretrain_epochs,
+                                             initial_epoch=args.pretrain_epochs,
                                              validation_data=dev,
                                              callbacks=self._callbacks)
 
@@ -125,7 +135,7 @@ class Network:
         if tf.random.uniform([]) >= 0.5:
             image = tf.image.flip_left_right(image)
             out_mask = tf.image.flip_left_right(out_mask)
-        image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 32, CAGS.W + 32)
+        # image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 32, CAGS.W + 32)
 
         rnd_H_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
         rnd_W_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
@@ -162,11 +172,17 @@ class Network:
     def efficient_net(self, args):
 
         efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False, drop_connect=args.drop_connect)
-        num_layers = len(efficientnet_b0.layers)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
+            layer.trainable = False
+
+        return efficientnet_b0
+
+    def end_pretraining(self, args):
+        num_layers = len(self.base_model.layers)
+        for lidx, layer in enumerate(self.base_model.layers):
             if ('conv' in layer.name or 'expand' in layer.name or 'reduce' in layer.name) \
-                    and lidx/num_layers >= args.freeze:
+                    and lidx / num_layers >= args.freeze:
                 layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
                 layer.trainable = True
             elif ('drop' in layer.name or 'bg' in layer.name or 'gn' in layer.name):
@@ -174,7 +190,12 @@ class Network:
             else:
                 layer.trainable = False
 
-        return efficientnet_b0
+        self._model.compile(
+            optimizer=self._optimizer,
+            loss=tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing),
+            metrics=[CAGSMaskIoU(name="iou")],
+        )
+
 
     def up_scale(self, input, down_scaled_output, args):
 
@@ -198,14 +219,14 @@ class Network:
             x = tf.keras.layers.BatchNormalization(axis=-1, name='up_bn_' + str(idx) + '_a')(x)
             x = tf.keras.layers.Activation(tf.nn.swish, name='up_activation_' + str(idx) + '_a')(x)
 
-            x = tf.keras.layers.Conv2D(up_filters, 3,
-                                       strides=1,
-                                       padding='same',
-                                       kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                       kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                       name='up_conv_' + str(idx) + '_b')(x)
-            x = tf.keras.layers.BatchNormalization(axis=-1, name='up_bn_' + str(idx) + '_b')(x)
-            x = tf.keras.layers.Activation(tf.nn.swish, name='up_activation_' + str(idx) + '_b')(x)
+            # x = tf.keras.layers.Conv2D(up_filters, 3,
+            #                            strides=1,
+            #                            padding='same',
+            #                            kernel_initializer=CONV_KERNEL_INITIALIZER,
+            #                            kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+            #                            name='up_conv_' + str(idx) + '_b')(x)
+            # x = tf.keras.layers.BatchNormalization(axis=-1, name='up_bn_' + str(idx) + '_b')(x)
+            # x = tf.keras.layers.Activation(tf.nn.swish, name='up_activation_' + str(idx) + '_b')(x)
 
         x = tf.keras.layers.Conv2D(1, 1,
                                    strides=1,
@@ -217,7 +238,64 @@ class Network:
         return output
 
 
+class NetworkEnsemble():
 
+    def __init__(self, cags, args):
+        self.ensemble_dir = args.ensemble_dir
+
+        self.dev_masks = tf.constant([lab.numpy() for lab in cags.dev.map(CAGS.parse).map(lambda x: x["mask"])], tf.float32)
+        # print(type(self.dev_labels[0]))
+        dev_len = len(self.dev_masks)
+        self.dev_res = np.zeros((dev_len, CAGS.H, CAGS.W), np.float32)
+
+        test_len = sum(1 for _ in cags.test.map(CAGS.parse))
+        self.test_res = np.zeros((test_len, CAGS.H, CAGS.W), np.float32)
+
+    def predict(self, cags, args):
+
+        dev = cags.dev
+        dev = dev.map(CAGS.parse)
+        dev = dev.map(lambda x: x["image"])
+        dev = dev.batch(args.batch_size)
+
+        test = cags.test
+        test = test.map(CAGS.parse)
+        test = test.map(lambda x: x["image"])
+        test = test.batch(args.batch_size)
+
+        num_model = 0
+        for model_h5 in os.listdir(self.ensemble_dir):
+            if model_h5.endswith('.h5'):
+                num_model += 1
+                print(model_h5)
+                model = tf.keras.models.load_model(os.path.join(self.ensemble_dir,model_h5))
+                self.dev_res += model.predict(dev)
+                self.test_res += model.predict(test)
+
+        if num_model:
+            self.dev_res /= num_model
+            self.test_res /= num_model
+
+    def evaluate(self):
+        dev_acc = tf.reduce_mean(CAGSMaskIoU(self.dev_masks, self.dev_res))
+        with open(os.path.join(self.ensemble_dir, "dev_out"), "w", encoding="utf-8") as out_file:
+            print("{:.4f}".format(dev_acc.numpy()), file=out_file)
+        with open(os.path.join(args.logdir, "cags_segmentation.txt"), "w", encoding="utf-8") as out_file:
+            for mask in self.test_res:
+                zeros, ones, runs = 0, 0, []
+                for pixel in np.reshape(mask >= 0.5, [-1]):
+                    if pixel:
+                        if zeros or (not zeros and not ones):
+                            runs.append(zeros)
+                            zeros = 0
+                        ones += 1
+                    else:
+                        if ones:
+                            runs.append(ones)
+                            ones = 0
+                        zeros += 1
+                runs.append(zeros + ones)
+                print(*runs, file=out_file)
 
 if __name__ == "__main__":
     # Parse arguments
@@ -242,6 +320,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
     parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
     # Transfer learning with resnet
+    parser.add_argument("--pretrain-epochs", default=5, type=int, help="First epochs when ")
     parser.add_argument("--freeze", default=0., type=float, help="Percentage of frozen layers.")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
