@@ -158,6 +158,7 @@ class Network:
 
         return efficientnet_b0
 
+
 class NetworkEnsemble():
 
     def __init__(self, cags, args):
@@ -203,8 +204,6 @@ class NetworkEnsemble():
         with open(os.path.join(self.ensemble_dir, "cags_competition_test.txt"), "w", encoding="utf-8") as out_file:
             for probs in self.test_res:
                 print(np.argmax(probs), file=out_file)
-
-
 
 
 if __name__ == "__main__":
