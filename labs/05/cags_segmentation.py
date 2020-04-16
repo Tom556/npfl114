@@ -200,8 +200,10 @@ class Network:
             else:
                 layer.trainable = False
 
-        lr = self._optimizer.lr.get_value()
-        self._optimizer.lr.set_value(lr * self.LR_REDUCE_PRETRAINING)
+        new_args = args
+
+        new_args.learning_rate = args.learning_rate * self.LR_REDUCE_PRETRAINING
+        self._optimizer = self.get_optimizer(args)
         self._model.compile(
             optimizer=self._optimizer,
             loss=tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing),
@@ -209,24 +211,11 @@ class Network:
         )
 
     def up_scale(self, input, down_scaled_output, args):
-
         for idx, dso in enumerate(down_scaled_output[1:] + [input]):
             up_filters = dso.shape[-1]
 
-            dso = tf.keras.layers.Conv2D(up_filters,
-                                         kernel_size=1,
-                                         strides=1,
-                                         padding='same',
-                                         kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                         name='horizontal_conv_' + str(idx))(dso)
-
-            dso = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx) )(dso)
-            dso = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx) + '_a')(dso)
-
             if idx == 0:
                 x = dso
-
             else:
                 x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
                                                     kernel_size=1,
@@ -238,6 +227,17 @@ class Network:
                 x = tf.keras.layers.BatchNormalization(axis=-1, name='upscale_bn_' + str(idx))(x)
                 x = tf.keras.layers.Activation(tf.nn.swish, name='upscale_activation_' + str(idx))(x)
                 x = x + dso
+
+            x = tf.keras.layers.Conv2D(up_filters,
+                                kernel_size=3,
+                                strides=1,
+                                padding='same',
+                                kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                name='horizontal_conv_' + str(idx))(x)
+
+            x = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx))(x)
+            x = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx))(x)
 
         x = tf.keras.layers.Conv2D(1,
                                    kernel_size=1,
