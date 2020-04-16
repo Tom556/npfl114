@@ -111,7 +111,7 @@ class Network:
             self.end_pretraining(args)
 
         self.model_history = self._model.fit(train,
-                                             epochs=args.epochs - args.pretrain_epochs,
+                                             epochs=args.epochs,
                                              initial_epoch=args.pretrain_epochs,
                                              validation_data=dev,
                                              callbacks=self._callbacks)
