@@ -21,6 +21,14 @@ CONV_KERNEL_INITIALIZER = {
 }
 
 class Network:
+
+    # i don't change those arguments per run
+
+    LR_REDUCE_PRETRAINING = 0.1
+    LR_REDUCE_PLATEAU = 0.2
+    PLATEAU_PATIENCE = 10
+    STOPPING_PATIENCE = 20
+
     def __init__(self, args):
 
         self.base_model = self.efficient_net(args)
@@ -59,7 +67,8 @@ class Network:
                                                                               decay_rate=decay_rate, staircase=False)
         elif args.decay == "onplateau":
             learning_rate_schedule = args.learning_rate
-            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_iou', factor=0.2, patience=5,
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_iou', factor=self.LR_REDUCE_PLATEAU,
+                                                                        patience=self.PLATEAU_PATIENCE,
                                                                         min_lr=args.learning_rate_final))
 
         else:
@@ -174,6 +183,8 @@ class Network:
         efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False, drop_connect=args.drop_connect)
 
         for lidx, layer in enumerate(efficientnet_b0.layers):
+            if ('conv' in layer.name or 'expand' in layer.name or 'reduce' in layer.name):
+                layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
             layer.trainable = False
 
         return efficientnet_b0
@@ -183,58 +194,59 @@ class Network:
         for lidx, layer in enumerate(self.base_model.layers):
             if ('conv' in layer.name or 'expand' in layer.name or 'reduce' in layer.name) \
                     and lidx / num_layers >= args.freeze:
-                layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
                 layer.trainable = True
             elif ('drop' in layer.name or 'bg' in layer.name or 'gn' in layer.name):
                 layer.trainable = True
             else:
                 layer.trainable = False
 
+        lr = self._optimizer.lr.get_value()
+        self._optimizer.lr.set_value(lr * self.LR_REDUCE_PRETRAINING)
         self._model.compile(
             optimizer=self._optimizer,
             loss=tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing),
             metrics=[CAGSMaskIoU(name="iou")],
         )
 
-
     def up_scale(self, input, down_scaled_output, args):
 
-        x = down_scaled_output[1]
-        for idx, dso in enumerate(down_scaled_output[2:] + [input]):
+        for idx, dso in enumerate(down_scaled_output[1:] + [input]):
             up_filters = dso.shape[-1]
-            x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
-                                                kernel_size=1,
-                                                padding='same',
-                                                strides=2,
-                                                kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                                kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                                name ='upscale_' + str(idx))(x)
-            x = x + dso
-            x = tf.keras.layers.Conv2D(up_filters, 3,
-                                       strides=1,
-                                       padding='same',
-                                       kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                       kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                       name='up_conv_' + str(idx) + '_a')(x)
-            x = tf.keras.layers.BatchNormalization(axis=-1, name='up_bn_' + str(idx) + '_a')(x)
-            x = tf.keras.layers.Activation(tf.nn.swish, name='up_activation_' + str(idx) + '_a')(x)
 
-            # x = tf.keras.layers.Conv2D(up_filters, 3,
-            #                            strides=1,
-            #                            padding='same',
-            #                            kernel_initializer=CONV_KERNEL_INITIALIZER,
-            #                            kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-            #                            name='up_conv_' + str(idx) + '_b')(x)
-            # x = tf.keras.layers.BatchNormalization(axis=-1, name='up_bn_' + str(idx) + '_b')(x)
-            # x = tf.keras.layers.Activation(tf.nn.swish, name='up_activation_' + str(idx) + '_b')(x)
+            dso = tf.keras.layers.Conv2D(up_filters,
+                                         kernel_size=1,
+                                         strides=1,
+                                         padding='same',
+                                         kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                         name='horizontal_conv_' + str(idx))(dso)
 
-        x = tf.keras.layers.Conv2D(1, 1,
+            dso = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx) )(dso)
+            dso = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx) + '_a')(dso)
+
+            if idx == 0:
+                x = dso
+
+            else:
+                x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
+                                                    kernel_size=1,
+                                                    strides=2,
+                                                    padding='same',
+                                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                                    kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                                    name ='upscale_conv_' + str(idx))(x)
+                x = tf.keras.layers.BatchNormalization(axis=-1, name='upscale_bn_' + str(idx))(x)
+                x = tf.keras.layers.Activation(tf.nn.swish, name='upscale_activation_' + str(idx))(x)
+                x = x + dso
+
+        x = tf.keras.layers.Conv2D(1,
+                                   kernel_size=1,
                                    strides=1,
                                    padding='same',
                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
                                    kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                   name='up_top_conv')(x)
-        output = tf.keras.layers.Activation(tf.keras.activations.sigmoid, name='up_top_activation')(x)
+                                   name='upscale_top_conv')(x)
+        output = tf.keras.layers.Activation(tf.keras.activations.sigmoid, name='upscale_top_activation')(x)
         return output
 
 
