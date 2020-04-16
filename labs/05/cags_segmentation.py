@@ -24,12 +24,13 @@ class Network:
 
     # i don't change those arguments per run
 
-    LR_REDUCE_PRETRAINING = 0.1
+    LR_REDUCE_PRETRAINING = 0.01
     LR_REDUCE_PLATEAU = 0.2
     PLATEAU_PATIENCE = 10
     STOPPING_PATIENCE = 20
 
     def __init__(self, args):
+        tf.executing_eagerly()
 
         self.base_model = self.efficient_net(args)
 
@@ -50,7 +51,8 @@ class Network:
 
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou', patience=20,
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou',mode='max',
+                                                                patience=self.STOPPING_PATIENCE,
                                                                 restore_best_weights=True))
 
     def get_optimizer(self, args):
@@ -67,7 +69,8 @@ class Network:
                                                                               decay_rate=decay_rate, staircase=False)
         elif args.decay == "onplateau":
             learning_rate_schedule = args.learning_rate
-            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_iou', factor=self.LR_REDUCE_PLATEAU,
+            self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_iou', mode='max',
+                                                                        factor=self.LR_REDUCE_PLATEAU,
                                                                         patience=self.PLATEAU_PATIENCE,
                                                                         min_lr=args.learning_rate_final))
 
@@ -157,6 +160,11 @@ class Network:
         image = tf.image.crop_to_bounding_box(image, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
         out_mask = tf.image.crop_to_bounding_box(out_mask, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
 
+        # global features, add noise
+        if args.noise_std:
+            image = image + tf.keras.backend.random_normal(shape=tf.shape(image), mean=0.0,
+                                                           stddev=args.noise_std, dtype=tf.float32)
+
         #cut_out
         if self.cut_out:
             mask = np.ones((CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out, CAGS.C), np.float32)
@@ -185,7 +193,11 @@ class Network:
         for lidx, layer in enumerate(efficientnet_b0.layers):
             if ('conv' in layer.name or 'expand' in layer.name or 'reduce' in layer.name):
                 layer.kernel_regularizer = tf.keras.regularizers.l2(args.l2)
-            layer.trainable = False
+
+            if ('drop' in layer.name or 'bg' in layer.name or 'gn' in layer.name):
+                layer.trainable = True
+            else:
+                layer.trainable = False
 
         return efficientnet_b0
 
@@ -226,7 +238,9 @@ class Network:
                                                     name ='upscale_conv_' + str(idx))(x)
                 x = tf.keras.layers.BatchNormalization(axis=-1, name='upscale_bn_' + str(idx))(x)
                 x = tf.keras.layers.Activation(tf.nn.swish, name='upscale_activation_' + str(idx))(x)
-                x = x + dso
+
+                # Stopping horizontal gradient theoretically should be helpful, but it wasn't demonstrated in the experiments.
+                x = x + dso #tf.keras.layers.Lambda(lambda y: tf.keras.backend.stop_gradient(y))(dso)
 
             x = tf.keras.layers.Conv2D(up_filters,
                                 kernel_size=3,
@@ -239,6 +253,17 @@ class Network:
             x = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx))(x)
             x = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx))(x)
 
+            x = tf.keras.layers.Conv2D(up_filters,
+                                kernel_size=3,
+                                strides=1,
+                                padding='same',
+                                kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                name='horizontal_conv_' + str(idx) + 'b')(x)
+
+            x = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx) + 'b')(x)
+            x = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx) + 'b')(x)
+
         x = tf.keras.layers.Conv2D(1,
                                    kernel_size=1,
                                    strides=1,
@@ -248,7 +273,6 @@ class Network:
                                    name='upscale_top_conv')(x)
         output = tf.keras.layers.Activation(tf.keras.activations.sigmoid, name='upscale_top_activation')(x)
         return output
-
 
 class NetworkEnsemble():
 
@@ -325,6 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("--drop-connect", default=0.2, type=float, help="Drop connection probability in efficient net.")
     # Augmentation parameters
     parser.add_argument("--cut-out", default=0, type=int, help="Size of cut out window.")
+    parser.add_argument("--noise-std", default=0., typr=float, help="Std of gaussian noise added to image (<0.001)")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
