@@ -349,7 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("--drop-connect", default=0.2, type=float, help="Drop connection probability in efficient net.")
     # Augmentation parameters
     parser.add_argument("--cut-out", default=0, type=int, help="Size of cut out window.")
-    parser.add_argument("--noise-std", default=0., typr=float, help="Std of gaussian noise added to image (<0.001)")
+    parser.add_argument("--noise-std", default=0., type=float, help="Std of gaussian noise added to image (<0.001)")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
