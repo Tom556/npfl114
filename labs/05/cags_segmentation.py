@@ -11,6 +11,12 @@ from cags_dataset import CAGS
 from cags_segmentation_eval import CAGSMaskIoU
 import efficient_net
 
+# this is needed to load Efficient NET keras model
+def swish_activation(x):
+    return (tf.keras.activations.sigmoid(x) * x)
+
+tf.keras.utils.get_custom_objects().update({'swish': tf.keras.layers.Activation(swish_activation)})
+
 CONV_KERNEL_INITIALIZER = {
     'class_name': 'VarianceScaling',
     'config': {
@@ -282,10 +288,10 @@ class NetworkEnsemble():
         self.dev_masks = tf.constant([lab.numpy() for lab in cags.dev.map(CAGS.parse).map(lambda x: x["mask"])], tf.float32)
         # print(type(self.dev_labels[0]))
         dev_len = len(self.dev_masks)
-        self.dev_res = np.zeros((dev_len, CAGS.H, CAGS.W), np.float32)
+        self.dev_res = np.zeros((dev_len, CAGS.H, CAGS.W, 1), np.float32)
 
         test_len = sum(1 for _ in cags.test.map(CAGS.parse))
-        self.test_res = np.zeros((test_len, CAGS.H, CAGS.W), np.float32)
+        self.test_res = np.zeros((test_len, CAGS.H, CAGS.W, 1), np.float32)
 
     def predict(self, cags, args):
 
@@ -313,10 +319,13 @@ class NetworkEnsemble():
             self.test_res /= num_model
 
     def evaluate(self):
-        dev_acc = tf.reduce_mean(CAGSMaskIoU(self.dev_masks, self.dev_res))
+        mask_iou = CAGSMaskIoU(name='iou_ensemble')
+        for dev_mask, dev_result in zip(self.dev_masks, self.dev_res):
+            mask_iou.update_state(dev_mask, dev_result)
+        dev_acc = mask_iou.result()
         with open(os.path.join(self.ensemble_dir, "dev_out"), "w", encoding="utf-8") as out_file:
             print("{:.4f}".format(dev_acc.numpy()), file=out_file)
-        with open(os.path.join(args.logdir, "cags_segmentation.txt"), "w", encoding="utf-8") as out_file:
+        with open(os.path.join(args.ensemble_dir, "cags_segmentation.txt"), "w", encoding="utf-8") as out_file:
             for mask in self.test_res:
                 zeros, ones, runs = 0, 0, []
                 for pixel in np.reshape(mask >= 0.5, [-1]):
@@ -383,7 +392,14 @@ if __name__ == "__main__":
     # Load the data
     cags = CAGS()
 
-    cags_network = Network(args)
-    cags_network.train(cags, args)
-    cags_network.test(cags, args)
-    cags_network.save(args, curr_date)
+    if args.ensemble_dir:
+        network_ensemble = NetworkEnsemble(cags, args)
+        network_ensemble.predict(cags, args)
+        network_ensemble.evaluate()
+
+    else:
+        cags_network = Network(args)
+        cags_network.train(cags, args)
+        cags_network.test(cags, args)
+        cags_network.save(args, curr_date)
+
