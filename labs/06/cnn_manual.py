@@ -17,9 +17,15 @@ class Convolution:
         self._channels = channels
         self._kernel_size = kernel_size
         self._stride = stride
+        self._input_h, self._input_w, self._input_ch = input_shape
+        self._output_h = int(np.floor((self._input_h - self._kernel_size)/self._stride) + 1)
+        self._output_w = int(np.floor((self._input_w - self._kernel_size)/self._stride) + 1)
+
         # TODO: Create self._kernel and self._bias variables of suitable shape
-        self._kernel = tf.Variable(tf.initializers.GlorotUniform(seed=42)(KERNEL_SHAPE), trainable=True)
-        self._bias = tf.Variable(tf.initializers.Zeros()(BIAS_SHAPE), trainable=True)
+        self._kernel = tf.Variable(tf.initializers.GlorotUniform(seed=42)
+                                   ((self._kernel_size, self._kernel_size, self._input_ch, self._channels)),
+                                   trainable=True)
+        self._bias = tf.Variable(tf.initializers.Zeros()((self._output_h,self._output_w, self._channels)), trainable=True)
 
     def forward(self, inputs):
         # TODO: Compute the forward propagation through the convolution
@@ -29,7 +35,24 @@ class Convolution:
         # manually iterate through the individual pixels or batch examples
         # (and ideally also not over input and output channels).
         # However, you can manually iterate through the kernel size.
-        raise NotImplementedError()
+
+        output = tf.zeros((tf.shape(inputs)[0], self._output_h, self._output_w, self._channels), dtype=tf.float32)
+        for h_kidx in range(self._kernel_size):
+            for w_kidx in range(self._kernel_size):
+                valid_h = self._input_h- self._kernel_size+h_kidx
+                valid_w = self._input_w- self._kernel_size+w_kidx
+                output += (
+                    tf.reshape(
+                        tf.reshape(
+                            inputs[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:],(-1,self._output_h*self._output_w,self._input_ch))
+                        @ self._kernel[h_kidx, w_kidx, :, :], (-1, self._output_h, self._output_w, self._channels))
+                )
+
+        output = output + self._bias
+
+        output = tf.nn.relu(output)
+
+        return output
 
     def backward(self, inputs, outputs, outputs_gradient):
         # TODO: Given the inputs of the layer, outputs of the layer
