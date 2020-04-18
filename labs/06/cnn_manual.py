@@ -26,7 +26,7 @@ class Convolution:
         self._kernel = tf.Variable(tf.initializers.GlorotUniform(seed=42)
                                    ((self._kernel_size, self._kernel_size, self._input_ch, self._channels)),
                                    trainable=True)
-        self._bias = tf.Variable(tf.initializers.Zeros()((self._output_h,self._output_w, self._channels)), trainable=True)
+        self._bias = tf.Variable(tf.initializers.Zeros()((self._channels)), trainable=True)
 
     def forward(self, inputs):
         # TODO: Compute the forward propagation through the convolution
@@ -42,14 +42,10 @@ class Convolution:
             for w_kidx in range(self._kernel_size):
                 valid_h = self._input_h- self._kernel_size+h_kidx+1
                 valid_w = self._input_w- self._kernel_size+w_kidx+1
-                output += (
-                    tf.reshape(
-                        tf.reshape(
-                            inputs[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:],(-1,self._output_h*self._output_w,self._input_ch))
-                        @ self._kernel[h_kidx, w_kidx, :, :], (-1, self._output_h, self._output_w, self._channels))
-                )
+                output += (inputs[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:]
+                           @ self._kernel[h_kidx, w_kidx, :, :])
 
-        output = output + self._bias
+        output = output + self._bias[tf.newaxis, tf.newaxis,tf.newaxis,:]
 
         output = tf.nn.relu(output)
 
@@ -67,7 +63,7 @@ class Convolution:
         #   to the loss (in the same order as the previous argument)
 
         gradient = outputs_gradient * tf.cast(outputs > 0, tf.float32)
-        bias_gradient = tf.reduce_mean(gradient, axis=0)
+        bias_gradient = tf.reduce_mean(tf.reduce_sum(gradient, axis=[1,2]), axis=0)
         inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
         kernel_gradient = tf.Variable(tf.initializers.Zeros()((self._kernel_size, self._kernel_size, self._input_ch, self._channels)), trainable=False)
         #inputs_gradient = tf.zeros((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch), dtype=tf.float32)
@@ -78,15 +74,14 @@ class Convolution:
                 valid_h = self._input_h-self._kernel_size+h_kidx+1
                 valid_w = self._input_w-self._kernel_size+w_kidx+1
                 tmp_inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
-                kernel_gradient[h_kidx,w_kidx].assign(tf.reduce_mean(tf.reduce_mean(
-                    tf.reshape(inputs[:, h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride, :], (-1,self._output_h*self._output_w,self._input_ch, 1))
-                    * tf.reshape(gradient,(-1,self._output_h*self._output_w,1,self._channels)), axis=1),axis=0))
+                kernel_gradient[h_kidx,w_kidx].assign(tf.reduce_mean(tf.reduce_sum(
+                    inputs[:, h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride, :, tf.newaxis]
+                    * gradient[:,:,:,tf.newaxis, :], axis=[1,2]), axis=0))
+
 
                 tmp_inputs_gradient[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:].assign(
-                    tf.reshape(tf.reshape(gradient, (-1,self._output_h*self._output_w,self._channels))
-                               @ tf.transpose(self._kernel[h_kidx, w_kidx, :, :]),
-                               (-1, self._output_h, self._output_w, self._input_ch))
-                )
+                    gradient @ tf.transpose(self._kernel[h_kidx, w_kidx, :, :]))
+
                 inputs_gradient.assign_add(tmp_inputs_gradient)
 
         variables = [self._kernel, self._bias]
