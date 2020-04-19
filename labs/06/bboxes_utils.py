@@ -38,16 +38,41 @@ def bbox_to_fast_rcnn(anchor, bbox):
     assert bbox[SVHN.BOTTOM] > bbox[SVHN.TOP]
     assert bbox[SVHN.RIGHT] > bbox[SVHN.LEFT]
 
-    # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+    anchor_height = anchor[SVHN.BOTTOM] - anchor[SVHN.TOP]
+    anchor_width = anchor[SVHN.RIGHT] - anchor[SVHN.LEFT]
+    anchor_y_center = anchor_height / 2. + anchor[SVHN.TOP]
+    anchor_x_center = anchor_width / 2. + anchor[SVHN.LEFT]
+
+    bbox_height = bbox[SVHN.BOTTOM] - bbox[SVHN.TOP]
+    bbox_width = bbox[SVHN.RIGHT] - bbox[SVHN.LEFT]
+    bbox_y_center = bbox_height / 2. + bbox[SVHN.TOP]
+    bbox_x_center = bbox_width / 2. + bbox[SVHN.LEFT]
+
+    return ((bbox_y_center - anchor_y_center) / anchor_height,
+            (bbox_x_center - anchor_x_center) / anchor_width,
+            np.log(bbox_height / anchor_height),
+            np.log(bbox_width / anchor_width))
 
 def bbox_from_fast_rcnn(anchor, fast_rcnn):
     """ Convert Fast-R-CNN-like representation relative to `anchor` to a `bbox`."""
     assert anchor[SVHN.BOTTOM] > anchor[SVHN.TOP]
     assert anchor[SVHN.RIGHT] > anchor[SVHN.LEFT]
 
-    # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+    anchor_height = anchor[SVHN.BOTTOM] - anchor[SVHN.TOP]
+    anchor_width = anchor[SVHN.RIGHT] - anchor[SVHN.LEFT]
+    anchor_y_center = anchor_height / 2. + anchor[SVHN.TOP]
+    anchor_x_center = anchor_width / 2. + anchor[SVHN.LEFT]
+
+    bbox_height = np.exp(fast_rcnn[2]) * anchor_height
+    bbox_width = np.exp(fast_rcnn[3]) * anchor_width
+
+    bbox_y_center = fast_rcnn[0] * anchor_height + anchor_y_center
+    bbox_x_center = fast_rcnn[1] * anchor_width + anchor_x_center
+
+    return (bbox_y_center - bbox_height / 2.,
+            bbox_x_center - bbox_width / 2.,
+            bbox_y_center + bbox_height / 2.,
+            bbox_x_center + bbox_width / 2.)
 
 def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     """ Compute training data for object detection.
@@ -82,9 +107,29 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
 
     # TODO: Sequentially for each gold object, find the first unused anchor
     # with the largest IoU and if the IoU is > 0, assign the object to the anchor.
+    indexed_anchors = list(enumerate(anchors))
+    indexed_bboxes = list(enumerate(gold_bboxes))
+
+    for g_bbox_idx, g_bbox in indexed_bboxes[:]:
+        if not indexed_anchors:
+            break
+        anchor_idx, anchor = max(indexed_anchors, key=lambda x: bbox_iou(g_bbox, x[1]))
+        if bbox_iou(anchor, g_bbox) > 0:
+            indexed_anchors.remove((anchor_idx, anchor))
+            anchor_classes[anchor_idx] = 1 + gold_classes[g_bbox_idx]
+            anchor_bboxes[anchor_idx, :] = bbox_to_fast_rcnn(anchor, g_bbox)
+
 
     # TODO: Sequentially for each unassigned anchor, find the first gold object
     # with the largest IoU. If the IoU >= threshold, assign the object to the anchor.
+
+    for anchor_idx, anchor in indexed_anchors:
+        if not indexed_bboxes:
+            break
+        g_bbox_idx, g_bbox = max(indexed_bboxes, key=lambda x: bbox_iou(anchor, x[1]))
+        if bbox_iou(anchor, g_bbox) >= iou_threshold:
+            anchor_classes[anchor_idx] = 1 + gold_classes[g_bbox_idx]
+            anchor_bboxes[anchor_idx,:] = bbox_to_fast_rcnn(anchor, g_bbox)
 
     return anchor_classes, anchor_bboxes
 

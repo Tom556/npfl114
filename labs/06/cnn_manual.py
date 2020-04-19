@@ -18,10 +18,12 @@ class Convolution:
         self._kernel_size = kernel_size
         self._stride = stride
 
+        print(self._stride)
+
         self._input_h, self._input_w, self._input_ch = input_shape
 
-        self._output_h = (self._input_h - self._kernel_size) // stride + 1
-        self._output_w = (self._input_w - self._kernel_size) // stride + 1
+        self._output_h = (self._input_h - self._kernel_size) // self._stride + 1
+        self._output_w = (self._input_w - self._kernel_size) // self._stride + 1
 
         # self._output_h = int(self._input_h // self._stride)
         # self._output_w = int(self._input_w // self._stride)
@@ -71,8 +73,8 @@ class Convolution:
         gradient = outputs_gradient * tf.cast(outputs > 0, tf.float32)
         bias_gradient = tf.reduce_mean(tf.reduce_sum(gradient, axis=[1,2]), axis=0)
         #inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
-        kernel_gradient = tf.Variable(tf.initializers.Zeros()((self._kernel_size, self._kernel_size, self._input_ch, self._channels)), trainable=False)
-        #inputs_gradient = tf.zeros((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch), dtype=tf.float32)
+        kernel_gradient = np.zeros((self._kernel_size, self._kernel_size, self._input_ch, self._channels), dtype=np.float32)
+        inputs_gradient = np.zeros((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch), dtype=np.float32)
         #kernel_gradient = tf.zeros((self._kernel_size, self._kernel_size, self._input_ch, self._channels), dtype=tf.float32)
 
         partial_input_gradients = []
@@ -82,14 +84,15 @@ class Convolution:
                 valid_w = self._input_w-self._kernel_size+w_kidx+1
 
                 partial_input_gradients.append(tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False))
-                kernel_gradient[h_kidx,w_kidx].assign(tf.reduce_mean(tf.reduce_sum(
+                kernel_gradient[h_kidx,w_kidx] = tf.reduce_mean(tf.reduce_sum(
                     inputs[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride, :, tf.newaxis]
-                    * gradient[:,:,:,tf.newaxis, :], axis=[1,2]), axis=0))
+                    * gradient[:,:,:,tf.newaxis, :], axis=[1,2]), axis=0)
 
-                partial_input_gradients[-1][:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride,:].assign(
+                inputs_gradient[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride,:] += (
                     gradient @ tf.transpose(self._kernel[h_kidx, w_kidx, :, :]))
 
-        inputs_gradient = tf.add_n(partial_input_gradients)
+        kernel_gradient = tf.constant(kernel_gradient, dtype=tf.float32)
+        inputs_gradient = tf.constant(inputs_gradient, dtype=tf.float32)
 
         variables = [self._kernel, self._bias]
         gradients = [kernel_gradient, bias_gradient]
