@@ -17,10 +17,14 @@ class Convolution:
         self._channels = channels
         self._kernel_size = kernel_size
         self._stride = stride
+
         self._input_h, self._input_w, self._input_ch = input_shape
 
-        self._output_h = int(np.floor((self._input_h - self._kernel_size)/self._stride)+1)
-        self._output_w = int(np.floor((self._input_w - self._kernel_size)/self._stride)+1)
+        self._output_h = (self._input_h - self._kernel_size) // stride + 1
+        self._output_w = (self._input_w - self._kernel_size) // stride + 1
+
+        # self._output_h = int(self._input_h // self._stride)
+        # self._output_w = int(self._input_w // self._stride)
 
         # TODO: Create self._kernel and self._bias variables of suitable shape
         self._kernel = tf.Variable(tf.initializers.GlorotUniform(seed=42)
@@ -42,7 +46,9 @@ class Convolution:
             for w_kidx in range(self._kernel_size):
                 valid_h = self._input_h- self._kernel_size+h_kidx+1
                 valid_w = self._input_w- self._kernel_size+w_kidx+1
-                output += (inputs[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:]
+                # valid_h = self._output_h * self._stride +h_kidx +1
+                # valid_w = self._output_w * self._stride +w_kidx +1
+                output += (inputs[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride,:]
                            @ self._kernel[h_kidx, w_kidx, :, :])
 
         output = output + self._bias[tf.newaxis, tf.newaxis,tf.newaxis,:]
@@ -64,25 +70,26 @@ class Convolution:
 
         gradient = outputs_gradient * tf.cast(outputs > 0, tf.float32)
         bias_gradient = tf.reduce_mean(tf.reduce_sum(gradient, axis=[1,2]), axis=0)
-        inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
+        #inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
         kernel_gradient = tf.Variable(tf.initializers.Zeros()((self._kernel_size, self._kernel_size, self._input_ch, self._channels)), trainable=False)
         #inputs_gradient = tf.zeros((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch), dtype=tf.float32)
         #kernel_gradient = tf.zeros((self._kernel_size, self._kernel_size, self._input_ch, self._channels), dtype=tf.float32)
 
+        partial_input_gradients = []
         for h_kidx in range(self._kernel_size):
             for w_kidx in range(self._kernel_size):
                 valid_h = self._input_h-self._kernel_size+h_kidx+1
                 valid_w = self._input_w-self._kernel_size+w_kidx+1
-                tmp_inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
+
+                partial_input_gradients.append(tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False))
                 kernel_gradient[h_kidx,w_kidx].assign(tf.reduce_mean(tf.reduce_sum(
-                    inputs[:, h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride, :, tf.newaxis]
+                    inputs[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride, :, tf.newaxis]
                     * gradient[:,:,:,tf.newaxis, :], axis=[1,2]), axis=0))
 
-
-                tmp_inputs_gradient[:,h_kidx:valid_h:self._stride, w_kidx:valid_w:self._stride,:].assign(
+                partial_input_gradients[-1][:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride,:].assign(
                     gradient @ tf.transpose(self._kernel[h_kidx, w_kidx, :, :]))
 
-                inputs_gradient.assign_add(tmp_inputs_gradient)
+        inputs_gradient = tf.add_n(partial_input_gradients)
 
         variables = [self._kernel, self._bias]
         gradients = [kernel_gradient, bias_gradient]
@@ -96,7 +103,9 @@ class Network:
         for layer in args.cnn.split(","):
             channels, kernel_size, stride = map(int, layer.split("-"))
             self._convolutions.append(Convolution(channels, kernel_size, stride, input_shape))
-            input_shape = [input_shape[0] // stride, input_shape[1] // stride, channels]
+            input_shape = [(input_shape[0] - kernel_size) // stride + 1,
+                           (input_shape[1] - kernel_size) // stride + 1, channels]
+
 
         # Create the classification head
         self._flatten = tf.keras.layers.Flatten(input_shape=input_shape)
