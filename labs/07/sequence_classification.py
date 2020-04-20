@@ -58,21 +58,41 @@ class Network:
         # because the former can run transparently on a GPU and is also
         # considerably faster on a CPU).
 
+        if args.rnn_cell == 'LSTM':
+            x = tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM")(sequences)
+        elif args.rnn_cell == 'GRU':
+            x = tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU")(sequences)
+        else:
+            x = tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU")(sequences)
+
         # TODO: If `args.hidden_layer` is nonzero, process the result using
         # a ReLU-activated fully connected layer with `args.hidden_layer` units.
+        if args.hidden_layer:
+            x = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(args.hidden_layer, activation='relu'))(x)
 
         # TODO: Generate predictions using a fully connected layer
         # with one output and `tf.nn.sigmoid` activation.
 
+        predictions = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1, activation='sigmoid'))(x)
+
         self.model = tf.keras.Model(inputs=sequences, outputs=predictions)
 
         # TODO: Create an Adam optimizer in self._optimizer
+
+        self._optimizer = tf.optimizers.Adam()
         # TODO: Create a suitable loss in self._loss
+
+        self._loss = tf.keras.losses.BinaryCrossentropy()
+
+
         # TODO: Create two metrics in self._metrics dictionary:
         #  - "loss", which is tf.metrics.Mean()
         #  - "accuracy", which is suitable accuracy
+
+        self._metrics = {"loss": tf.metrics.Mean(), "accuracy": tf.keras.metrics.BinaryAccuracy()}
         # TODO: Create a summary file writer using `tf.summary.create_file_writer`.
         # I usually add `flush_millis=10 * 1000` arguments to get the results reasonably quickly.
+        self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000, name='summary_writer')
 
     @tf.function
     def train_batch(self, batch, clip_gradient):
@@ -80,17 +100,32 @@ class Network:
         # - probabilities from self.model, passing `training=True` to the model
         # - loss, using `self._loss`
 
+        with tf.GradientTape() as tape:
+            predictions = self.model(batch["sequences"], training=True)
+            loss = self._loss(batch["labels"], predictions)
+
+
         # TODO: Then, compute `gradients` using `tape.gradients` with the loss and model variables.
+
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+
 
         # TODO: If `args.clip_gradient` is nonzero, clip the gradient
         # and compute `gradient_norm` using `tf.clip_by_global_norm`.
         # Otherwise, only compute the `gradient_norm` using
         # `tf.linalg.global_norm`.
 
+        if clip_gradient:
+            gradients, global_norm = tf.clip_by_global_norm(gradients, clip_gradient, name="gradient_clip_norm")
+        else:
+            global_norm = tf.linalg.global_norm(gradients)
         # TODO: Apply the gradients using the `self._optimizer`
 
+        self._optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         # TODO: Generate the summaries. Start by setting the current summary step using
         # `tf.summary.experimental.set_step(self._optimizer.iterations)`.
+
+        tf.summary.experimental.set_step(self._optimizer.iterations)
 
         # Then, in the following with block, which records summaries
         # each 100 steps, perform the following:
@@ -103,6 +138,15 @@ class Network:
             #     `tf.summary.scalar("train/" + name, metric.result())`
             # - finally, also emit the gradient_norm using
             #   `tf.summary.scalar("train/gradient_norm", gradient_norm)`
+
+            for metric_name, metric in self._metrics.items():
+                metric.reset_states()
+                if metric_name == 'loss':
+                    metric(loss)
+                else:
+                    metric(batch["labels"], predictions)
+                tf.summary.scalar("train/" + metric_name, metric.result())
+            tf.summary.scalar("train/gradient_norm", global_norm)
 
     def train_epoch(self, dataset, args):
         for batch in dataset.batches(args.batch_size):
@@ -117,6 +161,8 @@ class Network:
         # averaged over all `dataset`.
         #
         # Start by resetting all metrics in `self._metrics`.
+        for metric in self._metrics.values():
+            metric.reset_states()
 
         # TODO: Then iterate over all batches in `dataset.batches(args.batch_size)`.
         # - For each, predict probabilities using `self.predict_batch`.
@@ -125,7 +171,16 @@ class Network:
         #   using the gold labels and the predictions)
         #
         # Finally, create a dictionary `metrics` with results, using names and values in `self._metrics`.
+        for batch in dataset.batches(args.batch_size):
+            predictions = self.predict_batch(batch)
+            loss = self._loss(batch["labels"], predictions)
+            for metric_name, metric in self._metrics.items():
+                if metric_name == 'loss':
+                    metric(loss)
+                else:
+                    metric(batch["labels"], predictions)
 
+        metrics = {name: metric.result() for name, metric in self._metrics.items()}
         with self._writer.as_default():
             for name, metric in metrics.items():
                 tf.summary.scalar("test/" + name, metric)
