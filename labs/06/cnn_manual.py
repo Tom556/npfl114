@@ -71,7 +71,7 @@ class Convolution:
         #   to the loss (in the same order as the previous argument)
 
         gradient = outputs_gradient * tf.cast(outputs > 0, tf.float32)
-        bias_gradient = tf.reduce_mean(tf.reduce_sum(gradient, axis=[1,2]), axis=0)
+        bias_gradient = tf.reduce_sum(gradient, axis=[0,1,2])
         #inputs_gradient = tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False)
         kernel_gradient = np.zeros((self._kernel_size, self._kernel_size, self._input_ch, self._channels), dtype=np.float32)
         inputs_gradient = np.zeros((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch), dtype=np.float32)
@@ -84,9 +84,9 @@ class Convolution:
                 valid_w = self._input_w-self._kernel_size+w_kidx+1
 
                 partial_input_gradients.append(tf.Variable(tf.initializers.Zeros()((tf.shape(inputs)[0], self._input_h, self._input_w, self._input_ch)), trainable=False))
-                kernel_gradient[h_kidx,w_kidx] = tf.reduce_mean(tf.reduce_sum(
+                kernel_gradient[h_kidx,w_kidx] = tf.reduce_sum(
                     inputs[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride, :, tf.newaxis]
-                    * gradient[:,:,:,tf.newaxis, :], axis=[1,2]), axis=0)
+                    * gradient[:,:,:,tf.newaxis, :], axis=[0,1,2])
 
                 inputs_gradient[:,h_kidx:valid_h:self._stride,w_kidx:valid_w:self._stride,:] += (
                     gradient @ tf.transpose(self._kernel[h_kidx, w_kidx, :, :]))
