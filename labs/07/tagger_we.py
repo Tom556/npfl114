@@ -14,16 +14,32 @@ class Network:
         # TODO: Implement a one-layer RNN network. The input
         # `word_ids` consists of a batch of sentences, each
         # a sequence of word indices. Padded words have index 0.
+        word_ids = tf.keras.layers.Input(shape=[None])
 
         # TODO: Embed input words with dimensionality `args.we_dim`,
         # using `mask_zero=True`.
+
+        x = tf.keras.layers.Embedding(num_words, args.we_dim, mask_zero=True)(word_ids)
+
 
         # TODO: Create specified `args.rnn_cell` RNN cell (LSTM, GRU) with
         # dimension `args.rnn_cell_dim` and apply it in a bidirectional way on
         # the embedded words, summing the outputs of forward and backward RNNs.
 
+        if args.rnn_cell == 'LSTM':
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM"), merge_mode='sum')(x)
+        elif args.rnn_cell == 'GRU':
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(x)
+        else:
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(x)
+
         # TODO: Add a softmax classification layer into `num_tags` classes, storing
         # the outputs in `predictions`.
+
+        predictions = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(num_tags, activation='softmax'))(x)
 
         self.model = tf.keras.Model(inputs=word_ids, outputs=predictions)
         self.model.compile(optimizer=tf.optimizers.Adam(),
@@ -40,6 +56,9 @@ class Network:
             # Additionally, pass `reset_metrics=True`.
             #
             # Store the computed metrics in `metrics`.
+            metrics = self.model.train_on_batch(batch[dataset.FORMS].word_ids,
+                                                batch[dataset.TAGS].word_ids,
+                                                reset_metrics=True)
 
             # Generate the summaries each 100 steps
             if self.model.optimizer.iterations % 100 == 0:
@@ -50,11 +69,14 @@ class Network:
 
     def evaluate(self, dataset, dataset_name, args):
         # We assume that model metric are already resetted at this point.
+        self.model.reset_metrics()
         for batch in dataset.batches(args.batch_size):
             # TODO: Evaluate the given batch with `test_on_batch`, using the
             # same inputs as in training, but pass `reset_metrics=False` to
             # aggregate the metrics. Store the metrics of the last batch as `metrics`.
-        self.model.reset_metrics()
+            metrics = self.model.test_on_batch(batch[dataset.FORMS].word_ids,
+                                               batch[dataset.TAGS].word_ids,
+                                               reset_metrics=False)
 
         metrics = dict(zip(self.model.metrics_names, metrics))
         with self._writer.as_default():

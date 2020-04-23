@@ -32,7 +32,37 @@ class Network:
 
         # Train the outputs using SparseCategoricalCrossentropy for the first two inputs
         # and BinaryCrossentropy for the third one, utilizing Adam with default arguments.
-        raise NotImplementedError()
+        input_1 = tf.keras.layers.Input([MNIST.H, MNIST.W, MNIST.C])
+        input_2 = tf.keras.layers.Input([MNIST.H, MNIST.W, MNIST.C])
+
+        cnn_model = tf.keras.models.Sequential([
+            tf.keras.layers.Conv2D(filters=10, kernel_size=3, strides=2, padding='valid', activation='relu'),
+            tf.keras.layers.Conv2D(filters=20, kernel_size=3, strides=2, padding='valid', activation='relu'),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(200, activation='relu')
+        ])
+
+        label_prediction = tf.keras.layers.Dense(10, activation='softmax')
+
+        feats_1 = cnn_model(input_1)
+        feats_2 = cnn_model(input_2)
+
+        out_1 = label_prediction(feats_1)
+        out_2 = label_prediction(feats_2)
+
+        feats = tf.keras.backend.concatenate([feats_1, feats_2], axis=-1)
+        feats = tf.keras.layers.Dense(200, activation='relu')(feats)
+        out_3 = tf.keras.layers.Dense(1, activation='sigmoid')(feats)
+
+        self.model = tf.keras.Model(inputs=[input_1, input_2], outputs=[out_1, out_2, out_3])
+
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(),
+                           loss=[tf.losses.SparseCategoricalCrossentropy(),
+                                 tf.losses.SparseCategoricalCrossentropy(),
+                                 tf.losses.BinaryCrossentropy()],
+                           metrics=[[tf.metrics.SparseCategoricalAccuracy(name='accuracy_1')],
+                                    [tf.metrics.SparseCategoricalAccuracy(name='accuracy_2')],
+                                    [tf.metrics.BinaryAccuracy(name='accuracy_3')]])
 
     @staticmethod
     def _prepare_batches(batches_generator):
@@ -42,14 +72,16 @@ class Network:
             if len(batches) == 2:
                 # TODO: yield suitable data for our task using two original
                 # batches (batches[0] and batches[1]).
+                model_inputs = [batches[0]["images"], batches[1]["images"]]
+                model_targets = [batches[0]["labels"], batches[1]["labels"], (batches[0]["labels"] > batches[1]["labels"])]
                 yield (model_inputs, model_targets)
                 batches.clear()
 
     def train(self, mnist, args):
         for epoch in range(args.epochs):
             # TODO: Train for one epoch using `model.train_on_batch` for each batch.
-            for batch in self._prepare_batches(mnist.train.batches(args.batch_size)):
-                pass
+            for inputs, targets in self._prepare_batches(mnist.train.batches(args.batch_size)):
+                self.model.train_on_batch(inputs, targets)
 
             # Print development evaluation
             print("Dev {}: directly predicting: {:.4f}, comparing digits: {:.4f}".format(epoch + 1, *self.evaluate(mnist.dev, args)))
@@ -61,10 +93,19 @@ class Network:
         #   model's direct prediction (i.e., its third output);
         # - the second is `undirect_accuracy`, which is computed by
         #   comparing the predicted labels (i.e., the first and second output).
-        for inputs, targets in self._prepare_batches(dataset.batches(args.batch_size)):
-            pass
 
-        return direct_accuracy, indirect_accuracy
+        direct_metric = tf.keras.metrics.BinaryAccuracy(name='binary_accuracy_direct')
+        indirect_metric = tf.keras.metrics.BinaryAccuracy(name='binary_accuracy_indirect')
+        for inputs, targets in self._prepare_batches(dataset.batches(args.batch_size)):
+            pred_1, pred_2, pred_3 = self.model.predict_on_batch(inputs)
+
+            out_1 = np.argmax(pred_1, axis=-1)
+            out_2 = np.argmax(pred_2, axis=-1)
+            indirect_out = (out_1 > out_2)
+            direct_metric.update_state(targets[2], pred_3)
+            indirect_metric.update_state(targets[2], indirect_out)
+
+        return direct_metric.result(), indirect_metric.result()
 
 
 if __name__ == "__main__":
@@ -95,6 +136,7 @@ if __name__ == "__main__":
     # Load the data
     mnist = MNIST()
 
+    # Create the network and train
     # Create the network and train
     network = Network(args)
     network.train(mnist, args)
