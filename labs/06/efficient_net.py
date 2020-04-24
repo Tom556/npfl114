@@ -33,6 +33,7 @@ import sys
 import urllib.request
 
 import tensorflow as tf
+import tensorflow_addons as tfa
 
 BlockArgs = collections.namedtuple('BlockArgs', [
     'kernel_size', 'num_repeat', 'input_filters', 'output_filters',
@@ -114,6 +115,7 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
                                    name=prefix + 'expand_conv')(inputs)
         x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'expand_bn')(x)
+        # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'expand_gn')(x)
         x = tf.keras.layers.Activation(activation, name=prefix + 'expand_activation')(x)
     else:
         x = inputs
@@ -126,6 +128,7 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                         depthwise_initializer=CONV_KERNEL_INITIALIZER,
                                         name=prefix + 'dwconv')(x)
     x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'gn')(x)
     x = tf.keras.layers.Activation(activation, name=prefix + 'activation')(x)
 
     # Squeeze and Excitation phase
@@ -158,6 +161,7 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name=prefix + 'project_conv')(x)
     x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'project_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'project_gn')(x)
     if block_args.id_skip and all(
             s == 1 for s in block_args.strides
     ) and block_args.input_filters == block_args.output_filters:
@@ -248,6 +252,7 @@ def EfficientNet(width_coefficient,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name='stem_conv')(x)
     x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='stem_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name='stem_gn')(x)
     x = tf.keras.layers.Activation(activation, name='stem_activation')(x)
 
     # Build blocks
@@ -297,6 +302,7 @@ def EfficientNet(width_coefficient,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
                                name='top_conv')(x)
     x = tf.keras.layers.BatchNormalization(axis=bn_axis, name='top_bn')(x)
+    # x = tfa.layers.GroupNormalization(axis=bn_axis, name='top_gn')(x)
     x = tf.keras.layers.Activation(activation, name='top_activation')(x)
     outputs.append(x)
 
@@ -332,6 +338,7 @@ def EfficientNet(width_coefficient,
 
 def EfficientNetB0(
         include_top=True,
+        drop_connect=0.2,
         weights='imagenet',
         input_tensor=None,
         input_shape=None,
@@ -340,6 +347,7 @@ def EfficientNetB0(
 ):
     return EfficientNet(
         1.0, 1.0, 224, 0.2,
+        drop_connect_rate=drop_connect,
         model_name='efficientnet-b0',
         include_top=include_top, weights=weights,
         input_tensor=input_tensor, input_shape=input_shape,
@@ -497,7 +505,7 @@ def EfficientNetL2(
 setattr(EfficientNetL2, '__doc__', EfficientNet.__doc__)
 
 
-def pretrained_efficientnet_b0(include_top, dynamic_shape=False):
+def pretrained_efficientnet_b0(include_top, drop_connect=0.2):
     url = "https://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/models/"
     path = "efficientnet-b0_noisy-student.h5"
 
@@ -505,4 +513,4 @@ def pretrained_efficientnet_b0(include_top, dynamic_shape=False):
         print("Downloading file {}...".format(path), file=sys.stderr)
         urllib.request.urlretrieve("{}/{}".format(url, path), filename=path)
 
-    return EfficientNetB0(include_top, weights="efficientnet-b0_noisy-student.h5", input_shape=[None, None, 3] if dynamic_shape else None)
+    return EfficientNetB0(include_top, drop_connect=drop_connect, weights="efficientnet-b0_noisy-student.h5")

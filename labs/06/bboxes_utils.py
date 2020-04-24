@@ -130,6 +130,8 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
         if bbox_iou(anchor, g_bbox) >= iou_threshold:
             anchor_classes[anchor_idx] = 1 + gold_classes[g_bbox_idx]
             anchor_bboxes[anchor_idx,:] = bbox_to_fast_rcnn(anchor, g_bbox)
+        elif min(bbox_iou(anchor, x[1]) for x in indexed_bboxes) > 1 - iou_threshold:
+            anchor_classes[anchor_idx] = -1
 
     return anchor_classes, anchor_bboxes
 
