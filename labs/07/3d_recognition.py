@@ -90,7 +90,7 @@ class Network:
                                              callbacks=self._callbacks)
 
     def test(self, mnet, args):
-        test = mnet.test
+        test = tf.data.Dataset.from_tensor_slices(mnet.test.data)
         test = test.map(lambda x: x["voxels"])
         test = test.batch(args.batch_size)
         with open(os.path.join(args.logdir, "3d_recognition.txt"), "w", encoding="utf-8") as out_file:
