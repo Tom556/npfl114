@@ -45,19 +45,19 @@ BlockArgs.__new__.__defaults__ = (None,) * len(BlockArgs._fields)
 
 DEFAULT_BLOCKS_ARGS = [
     BlockArgs(kernel_size=3, num_repeat=1, input_filters=32, output_filters=16,
-              expand_ratio=1, id_skip=True, strides=[1, 1], se_ratio=0.25),
+              expand_ratio=1, id_skip=True, strides=[1, 1, 1], se_ratio=0.25),
     BlockArgs(kernel_size=3, num_repeat=2, input_filters=16, output_filters=24,
-              expand_ratio=6, id_skip=True, strides=[2, 2], se_ratio=0.25),
+              expand_ratio=6, id_skip=True, strides=[2, 2, 2], se_ratio=0.25),
     BlockArgs(kernel_size=5, num_repeat=2, input_filters=24, output_filters=40,
-              expand_ratio=6, id_skip=True, strides=[2, 2], se_ratio=0.25),
+              expand_ratio=6, id_skip=True, strides=[2, 2, 2], se_ratio=0.25),
     BlockArgs(kernel_size=3, num_repeat=3, input_filters=40, output_filters=80,
-              expand_ratio=6, id_skip=True, strides=[2, 2], se_ratio=0.25),
+              expand_ratio=6, id_skip=True, strides=[2, 2, 2], se_ratio=0.25),
     BlockArgs(kernel_size=5, num_repeat=3, input_filters=80, output_filters=112,
-              expand_ratio=6, id_skip=True, strides=[1, 1], se_ratio=0.25),
+              expand_ratio=6, id_skip=True, strides=[1, 1, 1], se_ratio=0.25),
     BlockArgs(kernel_size=5, num_repeat=4, input_filters=112, output_filters=192,
-              expand_ratio=6, id_skip=True, strides=[2, 2], se_ratio=0.25),
+              expand_ratio=6, id_skip=True, strides=[2, 2, 2], se_ratio=0.25),
     BlockArgs(kernel_size=3, num_repeat=1, input_filters=192, output_filters=320,
-              expand_ratio=6, id_skip=True, strides=[1, 1], se_ratio=0.25)
+              expand_ratio=6, id_skip=True, strides=[1, 1, 1], se_ratio=0.25)
 ]
 
 CONV_KERNEL_INITIALIZER = {
@@ -104,12 +104,12 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
     """Mobile Inverted Residual Bottleneck."""
 
     has_se = (block_args.se_ratio is not None) and (0 < block_args.se_ratio <= 1)
-    bn_axis = 3 if tf.keras.backend.image_data_format() == 'channels_last' else 1
+    bn_axis = 4 if tf.keras.backend.image_data_format() == 'channels_last' else 1
 
     # Expansion phase
     filters = block_args.input_filters * block_args.expand_ratio
     if block_args.expand_ratio != 1:
-        x = tf.keras.layers.Conv2D(filters, 1,
+        x = tf.keras.layers.Conv3D(filters, 1,
                                    padding='same',
                                    use_bias=False,
                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
@@ -121,11 +121,11 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
         x = inputs
 
     # Depthwise Convolution
-    x = tf.keras.layers.DepthwiseConv2D(block_args.kernel_size,
+    x = tf.keras.layers.Conv3D(filters, block_args.kernel_size,
                                         strides=block_args.strides,
                                         padding='same',
                                         use_bias=False,
-                                        depthwise_initializer=CONV_KERNEL_INITIALIZER,
+                                        kernel_initializer=CONV_KERNEL_INITIALIZER,
                                         name=prefix + 'dwconv')(x)
     x = tf.keras.layers.BatchNormalization(axis=bn_axis, name=prefix + 'bn')(x)
     # x = tfa.layers.GroupNormalization(axis=bn_axis, name=prefix + 'gn')(x)
@@ -136,17 +136,17 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
         num_reduced_filters = max(1, int(
             block_args.input_filters * block_args.se_ratio
         ))
-        se_tensor = tf.keras.layers.GlobalAveragePooling2D(name=prefix + 'se_squeeze')(x)
+        se_tensor = tf.keras.layers.GlobalAveragePooling3D(name=prefix + 'se_squeeze')(x)
 
-        target_shape = (1, 1, filters) if tf.keras.backend.image_data_format() == 'channels_last' else (filters, 1, 1)
+        target_shape = (1, 1, 1, filters) if tf.keras.backend.image_data_format() == 'channels_last' else (filters, 1, 1, 1)
         se_tensor = tf.keras.layers.Reshape(target_shape, name=prefix + 'se_reshape')(se_tensor)
-        se_tensor = tf.keras.layers.Conv2D(num_reduced_filters, 1,
+        se_tensor = tf.keras.layers.Conv3D(num_reduced_filters, 1,
                                            activation=activation,
                                            padding='same',
                                            use_bias=True,
                                            kernel_initializer=CONV_KERNEL_INITIALIZER,
                                            name=prefix + 'se_reduce')(se_tensor)
-        se_tensor = tf.keras.layers.Conv2D(filters, 1,
+        se_tensor = tf.keras.layers.Conv3D(filters, 1,
                                            activation='sigmoid',
                                            padding='same',
                                            use_bias=True,
@@ -155,7 +155,7 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
         x = tf.keras.layers.multiply([x, se_tensor], name=prefix + 'se_excite')
 
     # Output phase
-    x = tf.keras.layers.Conv2D(block_args.output_filters, 1,
+    x = tf.keras.layers.Conv3D(block_args.output_filters, 1,
                                padding='same',
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
@@ -167,7 +167,7 @@ def mb_conv_block(inputs, block_args, activation, drop_rate=None, prefix='', ):
     ) and block_args.input_filters == block_args.output_filters:
         if drop_rate and (drop_rate > 0):
             x = tf.keras.layers.Dropout(drop_rate,
-                                        noise_shape=(None, 1, 1, 1),
+                                        noise_shape=(None, 1, 1, 1, 1),
                                         name=prefix + 'drop')(x)
         x = tf.keras.layers.add([x, inputs], name=prefix + 'add')
 
@@ -228,9 +228,9 @@ def EfficientNet(width_coefficient,
     # Determine proper input shape
     if input_shape is None:
         if tf.keras.backend.image_data_format() == "channels_last":
-            input_shape = [default_resolution, default_resolution, 3]
+            input_shape = [default_resolution, default_resolution, default_resolution, 1]
         else:
-            input_shape = [3, default_resolution, default_resolution]
+            input_shape = [1, default_resolution, default_resolution, default_resolution]
 
     if input_tensor is None:
         img_input = tf.keras.layers.Input(shape=input_shape)
@@ -240,13 +240,13 @@ def EfficientNet(width_coefficient,
         else:
             img_input = input_tensor
 
-    bn_axis = 3 if tf.keras.backend.image_data_format() == 'channels_last' else 1
+    bn_axis = 4 if tf.keras.backend.image_data_format() == 'channels_last' else 1
     activation = tf.nn.swish
 
     # Build stem
     x = img_input
-    x = tf.keras.layers.Conv2D(round_filters(32, width_coefficient, depth_divisor), 3,
-                               strides=(2, 2),
+    x = tf.keras.layers.Conv3D(round_filters(32, width_coefficient, depth_divisor), 3,
+                               strides=(2, 2, 2),
                                padding='same',
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
@@ -271,7 +271,7 @@ def EfficientNet(width_coefficient,
 
         # The first block needs to take care of stride and filter size increase.
         drop_rate = drop_connect_rate * float(block_num) / num_blocks_total
-        if block_args.strides != [1, 1]:
+        if block_args.strides != [1, 1, 1]:
             outputs.append(x)
         x = mb_conv_block(x, block_args,
                           activation=activation,
@@ -281,7 +281,7 @@ def EfficientNet(width_coefficient,
         if block_args.num_repeat > 1:
             # pylint: disable=protected-access
             block_args = block_args._replace(
-                input_filters=block_args.output_filters, strides=[1, 1])
+                input_filters=block_args.output_filters, strides=[1, 1, 1])
             # pylint: enable=protected-access
             for bidx in range(block_args.num_repeat - 1):
                 drop_rate = drop_connect_rate * float(block_num) / num_blocks_total
@@ -296,7 +296,7 @@ def EfficientNet(width_coefficient,
                 block_num += 1
 
     # Build top
-    x = tf.keras.layers.Conv2D(round_filters(1280, width_coefficient, depth_divisor), 1,
+    x = tf.keras.layers.Conv3D(round_filters(1280, width_coefficient, depth_divisor), 1,
                                padding='same',
                                use_bias=False,
                                kernel_initializer=CONV_KERNEL_INITIALIZER,
@@ -307,7 +307,7 @@ def EfficientNet(width_coefficient,
     outputs.append(x)
 
     if include_top:
-        x = tf.keras.layers.GlobalAveragePooling2D(name='avg_pool')(x)
+        x = tf.keras.layers.GlobalAveragePooling3D(name='avg_pool')(x)
         if dropout_rate and dropout_rate > 0:
             x = tf.keras.layers.Dropout(dropout_rate, name='top_dropout')(x)
         x = tf.keras.layers.Dense(classes,
@@ -315,7 +315,7 @@ def EfficientNet(width_coefficient,
                                   kernel_initializer=DENSE_KERNEL_INITIALIZER,
                                   name='probs')(x)
     else:
-        x = tf.keras.layers.GlobalAveragePooling2D(name='avg_pool')(x)
+        x = tf.keras.layers.GlobalAveragePooling3D(name='avg_pool')(x)
     outputs.append(x)
 
     # Ensure that the model takes into account
@@ -327,7 +327,7 @@ def EfficientNet(width_coefficient,
 
     # Create model.
     outputs.reverse()
-    model = tf.keras.Model(inputs, outputs, name=model_name)
+    model = tf.keras.Model(inputs, outputs[0], name=model_name)
 
     # Load weights.
     if weights is not None:
@@ -343,10 +343,12 @@ def EfficientNetB0(
         input_tensor=None,
         input_shape=None,
         classes=1000,
+        resolution=32,
+        dropout_rate=0.2,
         **kwargs
 ):
     return EfficientNet(
-        1.0, 1.0, 224, 0.2,
+        1.0, 1.0, resolution, dropout_rate,
         drop_connect_rate=drop_connect,
         model_name='efficientnet-b0',
         include_top=include_top, weights=weights,
@@ -505,12 +507,12 @@ def EfficientNetL2(
 setattr(EfficientNetL2, '__doc__', EfficientNet.__doc__)
 
 
-def pretrained_efficientnet_b0(include_top, drop_connect=0.2):
-    url = "https://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/models/"
-    path = "efficientnet-b0_noisy-student.h5"
-
-    if not os.path.exists(path):
-        print("Downloading file {}...".format(path), file=sys.stderr)
-        urllib.request.urlretrieve("{}/{}".format(url, path), filename=path)
-
-    return EfficientNetB0(include_top, drop_connect=drop_connect, weights="efficientnet-b0_noisy-student.h5")
+# def pretrained_efficientnet_b0(include_top, drop_connect=0.2):
+#     url = "https://ufal.mff.cuni.cz/~straka/courses/npfl114/1920/models/"
+#     path = "efficientnet-b0_noisy-student.h5"
+#
+#     if not os.path.exists(path):
+#         print("Downloading file {}...".format(path), file=sys.stderr)
+#         urllib.request.urlretrieve("{}/{}".format(url, path), filename=path)
+#
+#     return EfficientNetB0(include_top, drop_connect=drop_connect, weights="efficientnet-b0_noisy-student.h5")
