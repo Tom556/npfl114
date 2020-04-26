@@ -12,7 +12,7 @@ import bboxes_utils
 import efficient_net
 from svhn_dataset import SVHN
 import svhn_eval
-import importlib
+import sys
 
 from roi_pooling import RoIPooling
 from object_detection.anchor_generators.multiscale_grid_anchor_generator import MultiscaleGridAnchorGenerator
@@ -37,9 +37,7 @@ CONV_KERNEL_INITIALIZER = {
 
 def fast_cnn_loss(gold, predicted):
     weights = tf.cast(tf.reduce_max(tf.abs(gold), axis=1) != 0., tf.float32)
-    gold *= weights
-    predicted *= weights
-    return tf.compat.v1.losses.huber_loss(gold, predicted)
+    return tf.compat.v1.losses.huber_loss(gold, predicted) * weights
 
 class Network:
 
@@ -51,7 +49,8 @@ class Network:
     STOPPING_PATIENCE = 20
 
     MAX_SIZE = 224
-    SCALES = np.array([2., np.power(2.,1./3.), np.power(2.,2./3.)])
+    NUM_ANCHORS = 64
+    PREDICTION_THRESHOLD = 0.5
 
     def __init__(self, args):
         tf.executing_eagerly()
@@ -99,7 +98,7 @@ class Network:
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
-        decay_steps = int(5000 * args.epochs / args.batch_size)
+        decay_steps = int(100 * args.epochs / args.batch_size)
         if args.decay == 'polynomial':
             learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
                                                                              decay_steps=decay_steps,
@@ -137,6 +136,10 @@ class Network:
         train = train.shuffle(500, seed=args.seed)
         train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         train = train.map(self.preprocess_train)
+        for x in train.take(1):
+            for i in range(1,4):
+                print(len(x[0][i]))
+
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         for epoch in range(args.epochs):
@@ -144,8 +147,8 @@ class Network:
                 #self._model.train_on_batch(inputs, targets)
                 metrics = self._model.train_on_batch(inputs, targets, reset_metrics=True)
 
-                # Generate the summaries each 100 steps
-                if self._model.optimizer.iterations % 100 == 0:
+                # Generate the summaries each 10 steps
+                if self._model.optimizer.iterations % 10 == 0:
                     tf.summary.experimental.set_step(self._model.optimizer.iterations)
                     with self._writer.as_default():
                         for name, value in zip(self._model.metrics_names, metrics):
@@ -175,33 +178,37 @@ class Network:
         for name, value in metrics.items():
             print("\t{}: {}".format(name, value))
 
+    def predict(self,dataset, dataset_name, args):
 
-    def test(self, svhn, args):
-        test = svhn.test
-        test = test.map(SVHN.parse)
-        test = test.map(lambda x: x["image"])
-        test = test.batch(args.batch_size)
-        with open(os.path.join(args.logdir, "cags_segmentation.txt"), "w", encoding="utf-8") as out_file:
-            test_masks = self._model.predict(test)
-            for mask in test_masks:
-                zeros, ones, runs = 0, 0, []
-                for pixel in np.reshape(mask >= 0.5, [-1]):
-                    if pixel:
-                        if zeros or (not zeros and not ones):
-                            runs.append(zeros)
-                            zeros = 0
-                        ones += 1
-                    else:
-                        if ones:
-                            runs.append(ones)
-                            ones = 0
-                        zeros += 1
-                runs.append(zeros + ones)
-                print(*runs, file=out_file)
+        dataset = dataset.map(SVHN.parse)
+        dataset = dataset.map(lambda x: x["image"])
+        dataset = dataset.map(self.preprocess_predict)
+        dataset = dataset.batch(args.batch_size).prefetch(args.threads)
 
-    def save(self, args, curr_date):
-        self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
-                                      format(curr_date, max(self.model_history.history['val_iou'][-20:]))), include_optimizer=False)
+        with open(os.path.join(args.logdir, "{}_svhn_classification.txt".format(dataset_name)), "w", encoding="utf-8") as out_file:
+
+            for input in dataset:
+                preds = self._model(input, training=False)
+                input_anchors = tf.concat([tf.squeeze(input[1]), tf.squeeze(input[2]), tf.squeeze(input[3])], axis=0)
+                predicted_classes = tf.concat([tf.squeeze(preds[0]), tf.squeeze(preds[1]), tf.squeeze(preds[2])], axis=0)
+                class_probs = tf.reduce_max(predicted_classes, axis=1)
+                predicted_classes= tf.argmax(predicted_classes, axis=1)
+                #print(tf.shape(class_probs))
+
+                predicted_frcnn =tf.concat([tf.squeeze(preds[3]), tf.squeeze(preds[4]), tf.squeeze(preds[5])], axis=0)
+                indicies = tf.squeeze(tf.image.non_max_suppression(predicted_frcnn , class_probs, 300, 0.7, self.PREDICTION_THRESHOLD))
+
+                input_anchors = tf.gather(input_anchors, indicies).numpy()
+                predicted_frcnn = tf.gather(predicted_frcnn, indicies).numpy()
+                predicted_classes = tf.gather(predicted_classes, indicies).numpy()
+
+                output = []
+                for anchor, frcnn, pred_class in zip(input_anchors, predicted_frcnn, predicted_classes):
+                    bbox = bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn)
+                    output.append(pred_class)
+                    output.extend(bbox)
+
+                print(*output, file=out_file)
 
     def preprocess_train(self, image, bboxes, bbox_classes):
         tf.executing_eagerly()
@@ -212,25 +219,51 @@ class Network:
         bboxes = tf.cast(bboxes, tf.float32) * tf.cast(self.MAX_SIZE / img_h, tf.float32)
         bbox_classes = bbox_classes
 
-        # anchors = np.array([get_all_anchors(3, cls.SCALES * np.power(2,l), (0.5, 1., 2.), cls.MAX_SIZE) for l in range(3,6)])
-        # anchors = tf.stack([tf.constant(get_all_anchors(3, np.sqrt(self.SCALES * np.power(2, l)), (0.5, 1., 2.), self.MAX_SIZE))
-        #                        for l in range(3, 6)])
-        # anchors_shape = anchors.shape
         layer_anchors = []
         layer_frcnns = []
         layer_classes = []
 
         for l_anchors in self.anchors:
+
             l_anchors = l_anchors.get()
+            print(l_anchors.shape)
             anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
-                                                                    [l_anchors, bbox_classes, bboxes, 0.7],
+                                                                    [l_anchors, bbox_classes, bboxes, 0.5],
                                                                     [tf.int32, tf.float32, tf.float32])
-            sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
+            pos_indices = tf.random.shuffle(tf.where(anchor_classes > -1))[:self.NUM_ANCHORS]
+            neg_indices = tf.random.shuffle(tf.where(tf.logical_and(anchor_classes == -1, scores ==1)))[:self.NUM_ANCHORS]
+            sel_indices = tf.squeeze(tf.concat([pos_indices, neg_indices], 0))
+            #print(tf.shape(sel_indices)
+            # sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
             layer_anchors.append(tf.gather(l_anchors, sel_indices))
             layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
             layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS))
 
+            layer_anchors.reverse()
+            layer_frcnns.reverse()
+            layer_classes.reverse()
+
         return tuple((tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)))
+
+    def preprocess_predict(self, image):
+        img_h = tf.shape(image)[0]
+
+        image = tf.image.resize(image, [self.MAX_SIZE, self.MAX_SIZE])
+
+        # anchors_shape = anchors.shape
+        layer_anchors = []
+
+        for l_anchors in self.anchors:
+            l_anchors = l_anchors.get()
+            sel_indices = tf.squeeze(
+                tf.where(
+                    tf.reduce_all(
+                        tf.logical_and(l_anchors >= 0, l_anchors <= self.MAX_SIZE), axis=-1)))
+            layer_anchors.append(tf.gather(l_anchors, sel_indices))
+
+        layer_anchors.reverse()
+
+        return tuple([image] + layer_anchors)
 
     def efficient_net(self, args):
 
@@ -273,7 +306,7 @@ class Network:
         outputs_regressors = []
         outputs_classes = []
 
-        rois.reverse()
+        # rois.reverse()
         down_scaled_output.reverse()
 
         filters = (1280, 112, 40)
@@ -317,65 +350,7 @@ class Network:
             outputs_classes.append(out_class)
             outputs_regressors.append(out_regr)
 
-        # outputs_regressors
-        # outputs_classes
-
-
         return outputs_classes + outputs_regressors
-
-
-
-    def up_scale(self, input, down_scaled_output, args):
-        for idx, dso in enumerate(down_scaled_output[1:] + [input]):
-            up_filters = dso.shape[-1]
-
-            if idx == 0:
-                x = dso
-            else:
-                x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
-                                                    kernel_size=1,
-                                                    strides=2,
-                                                    padding='same',
-                                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                                    kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                                    name ='upscale_conv_' + str(idx))(x)
-                x = tf.keras.layers.BatchNormalization(axis=-1, name='upscale_bn_' + str(idx))(x)
-                x = tf.keras.layers.Activation(tf.nn.swish, name='upscale_activation_' + str(idx))(x)
-
-                # Stopping horizontal gradient theoretically should be helpful, but it wasn't demonstrated in the experiments.
-                x = x + dso #tf.keras.layers.Lambda(lambda y: tf.keras.backend.stop_gradient(y))(dso)
-
-            x = tf.keras.layers.Conv2D(up_filters,
-                                kernel_size=3,
-                                strides=1,
-                                padding='same',
-                                kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                name='horizontal_conv_' + str(idx))(x)
-
-            x = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx))(x)
-            x = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx))(x)
-
-            x = tf.keras.layers.Conv2D(up_filters,
-                                kernel_size=3,
-                                strides=1,
-                                padding='same',
-                                kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                name='horizontal_conv_' + str(idx) + 'b')(x)
-
-            x = tf.keras.layers.BatchNormalization(axis=-1, name='horizontal_bn_' + str(idx) + 'b')(x)
-            x = tf.keras.layers.Activation(tf.nn.swish, name='horizonatl_activation_' + str(idx) + 'b')(x)
-
-        x = tf.keras.layers.Conv2D(1,
-                                   kernel_size=1,
-                                   strides=1,
-                                   padding='same',
-                                   kernel_initializer=CONV_KERNEL_INITIALIZER,
-                                   kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                   name='upscale_top_conv')(x)
-        output = tf.keras.layers.Activation(tf.keras.activations.sigmoid, name='upscale_top_activation')(x)
-        return output
 
 if __name__ == "__main__":
     # Parse arguments
@@ -385,7 +360,6 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-    parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     # Regularization parameters
     parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
@@ -398,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
     parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
 
+    parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
     # Fix random seeds and threads
@@ -422,18 +397,5 @@ if __name__ == "__main__":
 
     network = Network(args)
     network.train(svhn, args)
-
-
-    # # Generate test set annotations, but in args.logdir to allow parallel execution.
-    # with open(os.path.join(args.logdir, "svhn_classification.txt"), "w", encoding="utf-8") as out_file:
-    #     # TODO: Predict the digits and their bounding boxes on the test set.
-    #     for prediction in model.predict(...):
-    #         # Assume that for the given prediction we get its
-    #         # - `predicted_classes`: a 1D array with the predicted digits,
-    #         # - `predicted_bboxes`: a [len(predicted_classes), 4] array with bboxes;
-    #         # We can then generate the required output by
-    #         output = []
-    #         for label, bbox in zip(predicted_classes, predicted_bboxes):
-    #             output.append(label)
-    #             output.extend(bbox)
-    #         print(*output, file=out_file)
+    network.predict(svhn.dev, "dev", args)
+    network.predict(svhn.test, "test", args)
