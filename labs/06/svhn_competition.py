@@ -140,7 +140,7 @@ class Network:
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         for epoch in range(args.epochs):
-            for inputs, targets in train:
+            for inputs, targets in train.take(100):
                 #self._model.train_on_batch(inputs, targets)
                 metrics = self._model.train_on_batch(inputs, targets, reset_metrics=True)
 
@@ -162,12 +162,12 @@ class Network:
         dataset = dataset.batch(args.batch_size).prefetch(args.threads)
 
         self._model.reset_metrics()
-        for inputs, targets in dataset:
+        for inputs, targets in dataset.take(10):
             metrics = self._model.test_on_batch(inputs, targets,reset_metrics=False)
 
         metrics = dict(zip(self._model.metrics_names, metrics))
         with self._writer.as_default():
-            tf.summary.experimental.set_step(self.model.optimizer.iterations)
+            tf.summary.experimental.set_step(self._model.optimizer.iterations)
             for name, value in metrics.items():
                 tf.summary.scalar("{}/{}".format(dataset_name, name), value)
 
@@ -228,7 +228,7 @@ class Network:
             sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
             layer_anchors.append(tf.gather(l_anchors, sel_indices))
             layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
-            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS+1))
+            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS))
 
         return tuple((tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)))
 
@@ -308,7 +308,7 @@ class Network:
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcB_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
 
-            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS+1, activation='softmax', kernel_initializer='zero'),
+            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
                                         name='dense_class_{}'.format(idx))(out)
 
             out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
@@ -424,12 +424,6 @@ if __name__ == "__main__":
     network.train(svhn, args)
 
 
-    # Load the EfficientNet-B0 model
-    # efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False, dynamic_shape=False)
-
-    # # TODO: Create the model and train it
-    # model = ...
-    #
     # # Generate test set annotations, but in args.logdir to allow parallel execution.
     # with open(os.path.join(args.logdir, "svhn_classification.txt"), "w", encoding="utf-8") as out_file:
     #     # TODO: Predict the digits and their bounding boxes on the test set.
