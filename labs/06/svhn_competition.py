@@ -35,50 +35,11 @@ CONV_KERNEL_INITIALIZER = {
 }
 
 
-
-
-
-def get_all_anchors(stride, sizes, ratios, max_size):
-    """
-    Get all anchors in the largest possible image, shifted, floatbox
-    Args:
-        stride (int): the stride of anchors.
-        sizes (tuple[int]): the sizes (sqrt area) of anchors
-        ratios (tuple[int]): the aspect ratios of anchors
-        max_size (int): maximum size of input image
-    Returns:
-        anchors: SxSxNUM_ANCHORx4, where S == ceil(MAX_SIZE/STRIDE), floatbox
-        The layout in the NUM_ANCHOR dim is NUM_RATIO x NUM_SIZE.
-    """
-    # Generates a NAx4 matrix of anchor boxes in (x1, y1, x2, y2) format. Anchors
-    # are centered on 0, have sqrt areas equal to the specified sizes, and aspect ratios as given.
-    anchors = []
-    for sz in sizes:
-        for ratio in ratios:
-            w = np.sqrt(sz * sz / ratio)
-            h = ratio * w
-            anchors.append([-w, -h, w, h])
-    cell_anchors = np.asarray(anchors) * 0.5
-
-    field_size = int(np.ceil(max_size / stride))
-    shifts = (np.arange(0, field_size) * stride).astype("float32")
-    shift_x, shift_y = np.meshgrid(shifts, shifts)
-    shift_x = shift_x.flatten()
-    shift_y = shift_y.flatten()
-    shifts = np.vstack((shift_x, shift_y, shift_x, shift_y)).transpose()
-    # Kx4, K = field_size * field_size
-    K = shifts.shape[0]
-
-    A = cell_anchors.shape[0]
-    field_of_anchors = cell_anchors.reshape((1, A, 4)) + shifts.reshape((1, K, 4)).transpose((1, 0, 2))
-    field_of_anchors = field_of_anchors.reshape((field_size, field_size, A, 4))
-    # FSxFSxAx4
-    # Many rounding happens inside the anchor code anyway
-    # assert np.all(field_of_anchors == field_of_anchors.astype('int32'))
-    field_of_anchors = field_of_anchors.astype("float32")
-    return field_of_anchors
-
-
+def fast_cnn_loss(gold, predicted):
+    weights = tf.cast(tf.reduce_max(tf.abs(gold), axis=1) != 0., tf.float32)
+    gold *= weights
+    predicted *= weights
+    return tf.compat.v1.losses.huber_loss(gold, predicted)
 
 class Network:
 
@@ -106,17 +67,29 @@ class Network:
         self.anchors = self.anchor_generator.generate([(int(self.MAX_SIZE / 2**l), int(self.MAX_SIZE / 2**l)) for l in [3,4,5]]) #, im_height=self.MAX_SIZE, im_width=self.MAX_SIZE)] # [(1,1)]*3)]
 
         efficient_net = self.efficient_net(args)
-        roi_inputs = [tf.keras.layers.Input([None,4], name='roi_input_{}'.format(l_idx)) for l_idx in [3,4,5]]
+        roi_inputs = [tf.keras.layers.Input([None,4], name='roi_input_{}'.format(l_idx)) for l_idx in [5,4,3]]
 
         faster_rcnn_outputs = self.FasterRCNN(roi_inputs, efficient_net.outputs)
 
-        self.model = tf.keras.Model(inputs=[efficient_net.input] + roi_inputs, outputs=faster_rcnn_outputs)
-
+        self._model = tf.keras.Model(inputs=[efficient_net.input] + roi_inputs, outputs=faster_rcnn_outputs)
 
         self._callbacks = []
         self._optimizer = self.get_optimizer(args)
 
-        self._model.compile()
+        self._model.compile(
+            optimizer = self._optimizer,
+            loss=[tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+                  tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+                  tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+                  fast_cnn_loss,
+                  fast_cnn_loss,
+                  fast_cnn_loss],
+            metrics=[[tf.metrics.CategoricalAccuracy(name='accuracy_1')],
+                     [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
+                     [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
+                     [],[],[]])
+
+        self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
 
         self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
                                                                 update_freq=100, profile_batch=0))
@@ -126,7 +99,7 @@ class Network:
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
-        decay_steps = int(2142 * args.epochs / args.batch_size)
+        decay_steps = int(5000 * args.epochs / args.batch_size)
         if args.decay == 'polynomial':
             learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
                                                                              decay_steps=decay_steps,
@@ -155,6 +128,8 @@ class Network:
 
         return optimizer
 
+    #def
+
     def train(self, svhn, args):
 
         train = svhn.train
@@ -162,21 +137,43 @@ class Network:
         train = train.shuffle(500, seed=args.seed)
         train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         train = train.map(self.preprocess_train)
-        for sample, target in train.take(1):
-            print(sample[1].numpy().shape)
-            print(sample[2].numpy().shape)
-            print(sample[3].numpy().shape)
-            print((target[2].numpy() > 0).mean())
+        train = train.batch(args.batch_size).prefetch(args.threads)
 
+        for epoch in range(args.epochs):
+            for inputs, targets in train:
+                #self._model.train_on_batch(inputs, targets)
+                metrics = self._model.train_on_batch(inputs, targets, reset_metrics=True)
 
-            # print(weights.numpy())
-        # dev = cags.dev
-        # dev = dev.map(CAGS.parse)
-        # dev = dev.map(lambda x: (x["image"], x["mask"]))
-        # dev = dev.batch(args.batch_size).prefetch(args.threads)
-        #
-        # for train_batch in train:
-        #     pass
+                # Generate the summaries each 100 steps
+                if self._model.optimizer.iterations % 100 == 0:
+                    tf.summary.experimental.set_step(self._model.optimizer.iterations)
+                    with self._writer.as_default():
+                        for name, value in zip(self._model.metrics_names, metrics):
+                            tf.summary.scalar("train/{}".format(name), value)
+
+            self.evaluate(svhn.dev, 'validation', args)
+
+    def evaluate(self, dataset, dataset_name, args):
+
+        dataset = dataset.map(SVHN.parse)
+        dataset = dataset.shuffle(500, seed=args.seed)
+        dataset = dataset.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
+        dataset = dataset.map(self.preprocess_train)
+        dataset = dataset.batch(args.batch_size).prefetch(args.threads)
+
+        self._model.reset_metrics()
+        for inputs, targets in dataset:
+            metrics = self._model.test_on_batch(inputs, targets,reset_metrics=False)
+
+        metrics = dict(zip(self._model.metrics_names, metrics))
+        with self._writer.as_default():
+            tf.summary.experimental.set_step(self.model.optimizer.iterations)
+            for name, value in metrics.items():
+                tf.summary.scalar("{}/{}".format(dataset_name, name), value)
+
+        print("{} evaluation:".format(dataset_name))
+        for name, value in metrics.items():
+            print("\t{}: {}".format(name, value))
 
 
     def test(self, svhn, args):
@@ -223,20 +220,17 @@ class Network:
         layer_frcnns = []
         layer_classes = []
 
-
         for l_anchors in self.anchors:
             l_anchors = l_anchors.get()
             anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
                                                                     [l_anchors, bbox_classes, bboxes, 0.7],
                                                                     [tf.int32, tf.float32, tf.float32])
-            sel_indices = tf.image.non_max_suppression(l_anchors, scores, 300, 0.5, 0.5) # tf.where(scores > 0.5) #
+            sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
             layer_anchors.append(tf.gather(l_anchors, sel_indices))
             layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
-            layer_classes.append(tf.gather(anchor_classes, sel_indices))
+            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS+1))
 
-
-        return tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)
-
+        return tuple((tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)))
 
     def efficient_net(self, args):
 
@@ -282,13 +276,12 @@ class Network:
         rois.reverse()
         down_scaled_output.reverse()
 
-        print(len(down_scaled_output))
+        filters = (1280, 112, 40)
+
         for idx, l_idx in enumerate(range(max_layer,min_layer-1,-1)):
             f_map = down_scaled_output[l_idx-1]
             layer_rois = rois[idx]
-            #f_map_h, f_map_w, \
-            print(f_map.shape)
-            up_filters = f_map.shape[-1]
+            up_filters = filters[idx]
 
             if idx == 0:
                 x = f_map
@@ -307,25 +300,25 @@ class Network:
                 # Stopping horizontal gradient theoretically should be helpful, but it wasn't demonstrated in the experiments.
                 x = x + f_map #tf.keras.layers.Lambda(lambda y: tf.keras.backend.stop_gradient(y))(dso)
 
-                roi_pooled = RoIPooling(3, 3)((x, layer_rois / self.MAX_SIZE))
+            roi_pooled = RoIPooling(3, 3)((x, layer_rois / self.MAX_SIZE))
 
-                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Flatten(name='flatten'))(roi_pooled)
-                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4096, activation='relu', name='fcA_{}'.format(idx)))(out)
-                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
-                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4096, activation='relu', name='fcB_{}'.format(idx)))(out)
-                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Flatten(name='flatten'))(roi_pooled)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcA_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcB_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
 
-                out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
-                                            name='dense_class_{}'.format(idx))(out)
+            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS+1, activation='softmax', kernel_initializer='zero'),
+                                        name='dense_class_{}'.format(idx))(out)
 
-                out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
-                                           name='dense_regress_{}'.format(idx))(out)
+            out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
+                                       name='dense_regress_{}'.format(idx))(out)
 
-                outputs_classes.append(out_class)
-                outputs_regressors.append(out_regr)
+            outputs_classes.append(out_class)
+            outputs_regressors.append(out_regr)
 
-        outputs_regressors.reverse()
-        outputs_classes.reverse()
+        # outputs_regressors
+        # outputs_classes
 
 
         return outputs_classes + outputs_regressors
@@ -388,7 +381,7 @@ if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
     # TODO: Define reasonable defaults and optionally more parameters
-    parser.add_argument("--batch-size", default=None, type=int, help="Batch size.")
+    parser.add_argument("--batch-size", default=1, type=int, help="Batch size.")
     parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -398,6 +391,13 @@ if __name__ == "__main__":
     parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
     parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
     parser.add_argument("--drop-connect", default=0.2, type=float, help="Drop connection probability in efficient net.")
+    # Optimizer parameters
+    parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
+    parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
+    parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
+    parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
+    parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
+
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
     # Fix random seeds and threads
@@ -421,7 +421,6 @@ if __name__ == "__main__":
     svhn = SVHN()
 
     network = Network(args)
-
     network.train(svhn, args)
 
 
