@@ -100,10 +100,12 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     - Second, anchors unassigned so far are sequentially processed. For each
       anchor, find the first gold object with the largest IoU, and if the
       IoU is >= threshold, assign the object to the anchor.
+    - considred indeces
     """
 
     anchor_classes = np.zeros(len(anchors), np.int32)
     anchor_bboxes = np.zeros([len(anchors), 4], np.float32)
+    weights = np.ones(len(anchors), np.float32)
 
     # TODO: Sequentially for each gold object, find the first unused anchor
     # with the largest IoU and if the IoU is > 0, assign the object to the anchor.
@@ -130,10 +132,10 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
         if bbox_iou(anchor, g_bbox) >= iou_threshold:
             anchor_classes[anchor_idx] = 1 + gold_classes[g_bbox_idx]
             anchor_bboxes[anchor_idx,:] = bbox_to_fast_rcnn(anchor, g_bbox)
-        elif min(bbox_iou(anchor, x[1]) for x in indexed_bboxes) > 1 - iou_threshold:
-            anchor_classes[anchor_idx] = -1
+        elif bbox_iou(anchor, g_bbox) > 0.3:
+            weights[anchor_idx] = 0.
 
-    return anchor_classes, anchor_bboxes
+    return anchor_classes, anchor_bboxes, weights
 
 import unittest
 class Tests(unittest.TestCase):

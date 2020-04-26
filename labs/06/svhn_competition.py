@@ -14,6 +14,9 @@ from svhn_dataset import SVHN
 import svhn_eval
 import importlib
 
+from roi_pooling import RoIPooling
+from object_detection.anchor_generators.multiscale_grid_anchor_generator import MultiscaleGridAnchorGenerator
+
 
 
 # this is needed to load Efficient NET keras model
@@ -32,82 +35,7 @@ CONV_KERNEL_INITIALIZER = {
 }
 
 
-class RoIPooling(tf.keras.layers.Layer):
-    """Implementation of Jamie Sevilla, available at medium.com"""
-    def __init__(self, pooled_height, pooled_width, **kwargs):
-        self.pooled_height = pooled_height
-        self.pooled_width = pooled_width
-        super(RoIPooling, self).__init__(**kwargs)
 
-    def compute_output_shape(self, input_shape):
-        """ Returns the shape of the ROI Layer output
-        """
-        feature_map_shape, rois_shape = input_shape
-        assert feature_map_shape[0] == rois_shape[0]
-        batch_size = feature_map_shape[0]
-        n_rois = rois_shape[1]
-        n_channels = feature_map_shape[3]
-        return (batch_size, n_rois, self.pooled_height,
-                self.pooled_width, n_channels)
-
-    @staticmethod
-    def _pool_roi(feature_map, roi, pooled_height, pooled_width):
-        """ Applies ROI Pooling to a single image and a single ROI
-        """
-        # Compute the region of interest
-        feature_map_height = int(feature_map.shape[0])
-        feature_map_width = int(feature_map.shape[1])
-
-        h_start = tf.cast(feature_map_height * roi[0], 'int32')
-        w_start = tf.cast(feature_map_width * roi[1], 'int32')
-        h_end = tf.cast(feature_map_height * roi[2], 'int32')
-        w_end = tf.cast(feature_map_width * roi[3], 'int32')
-
-        region = feature_map[h_start:h_end, w_start:w_end, :]
-        # Divide the region into non overlapping areas
-        region_height = h_end - h_start
-        region_width = w_end - w_start
-        h_step = tf.cast(region_height / pooled_height, 'int32')
-        w_step = tf.cast(region_width / pooled_width, 'int32')
-
-        areas = [[(
-            i * h_step,
-            j * w_step,
-            (i + 1) * h_step if i + 1 < pooled_height else region_height,
-            (j + 1) * w_step if j + 1 < pooled_width else region_width
-        )
-            for j in range(pooled_width)]
-            for i in range(pooled_height)]
-
-        # Take the maximum of each area and stack the result
-        def pool_area(x):
-            return tf.math.reduce_max(region[x[0]:x[2], x[1]:x[3], :], axis=[0, 1])
-
-        pooled_features = tf.stack([[pool_area(x) for x in row] for row in areas])
-        return pooled_features
-
-    @staticmethod
-    def _pool_rois(feature_map, rois, pooled_height, pooled_width):
-        """ Applies ROI pooling for a single image and varios ROIs
-        """
-
-        def curried_pool_roi(roi):
-            return RoIPooling._pool_roi(feature_map, roi, pooled_height, pooled_width)
-
-        pooled_areas = tf.map_fn(curried_pool_roi, rois, dtype=tf.float32)
-        return pooled_areas
-
-    def call(self, x):
-        """ Maps the input tensor of the ROI layer to its output
-        """
-
-        def curried_pool_rois(x):
-            return RoIPooling._pool_rois(x[0], x[1],
-                                              self.pooled_height,
-                                              self.pooled_width)
-
-        pooled_areas = tf.map_fn(curried_pool_rois, x, dtype=tf.float32)
-        return pooled_areas
 
 
 def get_all_anchors(stride, sizes, ratios, max_size):
@@ -161,33 +89,40 @@ class Network:
     PLATEAU_PATIENCE = 10
     STOPPING_PATIENCE = 20
 
-    MAX_SIZE = 64
-    SCALES = np.array([2., np.power(2.,1./3.), np.power(2.,2./3.)]) * 4.
+    MAX_SIZE = 224
+    SCALES = np.array([2., np.power(2.,1./3.), np.power(2.,2./3.)])
 
     def __init__(self, args):
-        #print(tf.executing_eagerly())
+        tf.executing_eagerly()
         self.base_model = self.efficient_net(args)
 
-        self.anchors = np.array([get_all_anchors(3, self.SCALES * np.power(2, l), (0.5, 1., 2.), self.MAX_SIZE)
-                                 for l in range(3, 6)])
+        # self.anchors = tf.constant([get_all_anchors(3, np.sqrt(self.SCALES * np.power(2, l)), (0.5, 1., 2.), self.MAX_SIZE) / self.MAX_SIZE
+        #                          for l in range(3, 6)])
 
-        # output = self.fast_rnn(self.base_model.input, self.base_model.output, args)
-        #
-        # self._model = tf.keras.Model(inputs=self.base_model.input, outputs=output)
-        #
-        # self.cut_out = args.cut_out
-        #
-        # self._callbacks = []
-        # self._optimizer = self.get_optimizer(args)
-        #
-        # self._model.compile(
-        # )
-        #
-        # self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
-        #                                                         update_freq=100, profile_batch=0))
-        # self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou',mode='max',
-        #                                                         patience=self.STOPPING_PATIENCE,
-        #                                                         restore_best_weights=True))
+        self.anchor_generator = MultiscaleGridAnchorGenerator(min_level=3, max_level=5, anchor_scale=4,
+                                                              aspect_ratios=[0.5, 1., 2.], scales_per_octave=3, normalize_coordinates=False)
+
+        # print([(int(self.MAX_SIZE / 2**l), int(self.MAX_SIZE / 2**l)) for l in [2,3,4]])
+        self.anchors = self.anchor_generator.generate([(int(self.MAX_SIZE / 2**l), int(self.MAX_SIZE / 2**l)) for l in [3,4,5]]) #, im_height=self.MAX_SIZE, im_width=self.MAX_SIZE)] # [(1,1)]*3)]
+
+        efficient_net = self.efficient_net(args)
+        roi_inputs = [tf.keras.layers.Input([None,4], name='roi_input_{}'.format(l_idx)) for l_idx in [3,4,5]]
+
+        faster_rcnn_outputs = self.FasterRCNN(roi_inputs, efficient_net.outputs)
+
+        self.model = tf.keras.Model(inputs=[efficient_net.input] + roi_inputs, outputs=faster_rcnn_outputs)
+
+
+        self._callbacks = []
+        self._optimizer = self.get_optimizer(args)
+
+        self._model.compile()
+
+        self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
+                                                                update_freq=100, profile_batch=0))
+        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou',mode='max',
+                                                                patience=self.STOPPING_PATIENCE,
+                                                                restore_best_weights=True))
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
@@ -224,14 +159,17 @@ class Network:
 
         train = svhn.train
         train = train.map(SVHN.parse)
-        train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         train = train.shuffle(500, seed=args.seed)
-        train = np.array([self.preprocess_train(imx, bbxs, clss) for imx, bbxs, clss in train])
+        train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
+        train = train.map(self.preprocess_train)
+        for sample, target in train.take(1):
+            print(sample[1].numpy().shape)
+            print(sample[2].numpy().shape)
+            print(sample[3].numpy().shape)
+            print((target[2].numpy() > 0).mean())
 
-        for train_example in train[:20]:
-            print(train_example)
-        # train = train.batch(args.batch_size).prefetch(args.threads)
-        #
+
+            # print(weights.numpy())
         # dev = cags.dev
         # dev = dev.map(CAGS.parse)
         # dev = dev.map(lambda x: (x["image"], x["mask"]))
@@ -268,72 +206,37 @@ class Network:
         self._model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".
                                       format(curr_date, max(self.model_history.history['val_iou'][-20:]))), include_optimizer=False)
 
-
     def preprocess_train(self, image, bboxes, bbox_classes):
         tf.executing_eagerly()
         img_h = tf.shape(image)[0]
 
         image = tf.image.resize(image, [self.MAX_SIZE, self.MAX_SIZE])
 
-        bboxes = np.ceil(bboxes.numpy() * self.MAX_SIZE / img_h)
-        bbox_classes = bbox_classes.numpy()
+        bboxes = tf.cast(bboxes, tf.float32) * tf.cast(self.MAX_SIZE / img_h, tf.float32)
+        bbox_classes = bbox_classes
 
         # anchors = np.array([get_all_anchors(3, cls.SCALES * np.power(2,l), (0.5, 1., 2.), cls.MAX_SIZE) for l in range(3,6)])
-        anchor_classes, anchor_bboxes = bboxes_utils.bboxes_training(self.anchors.reshape((-1,4)), bbox_classes, bboxes, 0.7)
-        anchor_bboxes = np.reshape(anchor_bboxes, self.anchors.shape)
-        anchor_classes = np.reshape(anchor_classes, self.anchors.shape[:-1])
-
-        considered = [np.where(layer_classes != -1) for layer_classes in anchor_classes]
-
-        anchors = [layer_anchors[l_considered] for layer_anchors, l_considered in zip(self.anchors, considered)]
-        anchor_bboxes = [layer_anchor_bboxes[l_considered] for layer_anchor_bboxes, l_considered in zip(anchor_bboxes, considered)]
-        anchor_classes = [layer_classes[l_considered] for layer_classes, l_considered in zip(anchor_classes, considered)]
-
-        return (image, anchors), (anchor_bboxes, anchor_classes)
+        # anchors = tf.stack([tf.constant(get_all_anchors(3, np.sqrt(self.SCALES * np.power(2, l)), (0.5, 1., 2.), self.MAX_SIZE))
+        #                        for l in range(3, 6)])
+        # anchors_shape = anchors.shape
+        layer_anchors = []
+        layer_frcnns = []
+        layer_classes = []
 
 
-    # def train_augment(self, image, out_mask):
-    #     if tf.random.uniform([]) >= 0.5:
-    #         image = tf.image.flip_left_right(image)
-    #         out_mask = tf.image.flip_left_right(out_mask)
-    #     # image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 32, CAGS.W + 32)
-    #
-    #     rnd_H_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
-    #     rnd_W_resize = tf.random.uniform([], minval=0, maxval=64, dtype=tf.int32)
-    #     image = tf.image.resize(image, [CAGS.H + rnd_H_resize, CAGS.W + rnd_W_resize])
-    #     out_mask = tf.image.resize(out_mask, [CAGS.H + rnd_H_resize, CAGS.W + rnd_W_resize])
-    #
-    #     rnd_H_crop = tf.random.uniform([], minval=0, maxval=rnd_H_resize+1, dtype=tf.int32)
-    #     rnd_W_crop = tf.random.uniform([], minval=0, maxval=rnd_W_resize+1, dtype=tf.int32)
-    #
-    #     image = tf.image.crop_to_bounding_box(image, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
-    #     out_mask = tf.image.crop_to_bounding_box(out_mask, rnd_H_crop, rnd_W_crop, CAGS.H, CAGS.W)
-    #
-    #     # global features, add noise
-    #     if args.noise_std:
-    #         image = image + tf.keras.backend.random_normal(shape=tf.shape(image), mean=0.0,
-    #                                                        stddev=args.noise_std, dtype=tf.float32)
-    #
-    #     #cut_out
-    #     if self.cut_out:
-    #         mask = np.ones((CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out, CAGS.C), np.float32)
-    #         mean_pixels = np.zeros((CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out, CAGS.C), np.float32)
-    #         #image = tf.image.resize_with_crop_or_pad(image, CAGS.H + 2*self.cut_out, CAGS.W + 2*self.cut_out)
-    #         rnd_H_cutout = np.random.randint(CAGS.H + self.cut_out)
-    #         rnd_W_cutout = np.random.randint(CAGS.W + self.cut_out)
-    #
-    #         mask[rnd_H_cutout:rnd_H_cutout + self.cut_out, rnd_W_cutout + self.cut_out, :] = 0
-    #         mask = tf.constant(mask)
-    #         mask = tf.image.resize_with_crop_or_pad(mask, CAGS.H, CAGS.W)
-    #
-    #         mean_pixels[rnd_H_cutout:rnd_H_cutout + self.cut_out, rnd_W_cutout + self.cut_out, :] = np.array([0.15610054, 0.15610054, 0.15610054], np.float32)
-    #         mean_pixels = tf.constant(mean_pixels)
-    #         mean_pixels = tf.image.resize_with_crop_or_pad(mean_pixels, CAGS.H, CAGS.W)
-    #
-    #         image = image * mask + mean_pixels
-    #         out_mask = out_mask * mask
-    #
-    #     return image, out_mask
+        for l_anchors in self.anchors:
+            l_anchors = l_anchors.get()
+            anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
+                                                                    [l_anchors, bbox_classes, bboxes, 0.7],
+                                                                    [tf.int32, tf.float32, tf.float32])
+            sel_indices = tf.image.non_max_suppression(l_anchors, scores, 300, 0.5, 0.5) # tf.where(scores > 0.5) #
+            layer_anchors.append(tf.gather(l_anchors, sel_indices))
+            layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
+            layer_classes.append(tf.gather(anchor_classes, sel_indices))
+
+
+        return tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)
+
 
     def efficient_net(self, args):
 
@@ -370,6 +273,64 @@ class Network:
         #     loss=tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing),
         #     metrics=[CAGSMaskIoU(name="iou")],
         # )
+
+
+    def FasterRCNN(self, rois, down_scaled_output,min_layer=3,max_layer=5):
+        outputs_regressors = []
+        outputs_classes = []
+
+        rois.reverse()
+        down_scaled_output.reverse()
+
+        print(len(down_scaled_output))
+        for idx, l_idx in enumerate(range(max_layer,min_layer-1,-1)):
+            f_map = down_scaled_output[l_idx-1]
+            layer_rois = rois[idx]
+            #f_map_h, f_map_w, \
+            print(f_map.shape)
+            up_filters = f_map.shape[-1]
+
+            if idx == 0:
+                x = f_map
+
+            else:
+                x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
+                                                    kernel_size=1,
+                                                    strides=2,
+                                                    padding='same',
+                                                    kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                                    kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                                    name ='upscale_conv_' + str(idx))(x)
+                x = tf.keras.layers.BatchNormalization(axis=-1, name='upscale_bn_' + str(idx))(x)
+                x = tf.keras.layers.Activation(tf.nn.swish, name='upscale_activation_' + str(idx))(x)
+
+                # Stopping horizontal gradient theoretically should be helpful, but it wasn't demonstrated in the experiments.
+                x = x + f_map #tf.keras.layers.Lambda(lambda y: tf.keras.backend.stop_gradient(y))(dso)
+
+                roi_pooled = RoIPooling(3, 3)((x, layer_rois / self.MAX_SIZE))
+
+                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Flatten(name='flatten'))(roi_pooled)
+                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4096, activation='relu', name='fcA_{}'.format(idx)))(out)
+                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
+                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4096, activation='relu', name='fcB_{}'.format(idx)))(out)
+                out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
+
+                out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
+                                            name='dense_class_{}'.format(idx))(out)
+
+                out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
+                                           name='dense_regress_{}'.format(idx))(out)
+
+                outputs_classes.append(out_class)
+                outputs_regressors.append(out_regr)
+
+        outputs_regressors.reverse()
+        outputs_classes.reverse()
+
+
+        return outputs_classes + outputs_regressors
+
+
 
     def up_scale(self, input, down_scaled_output, args):
         for idx, dso in enumerate(down_scaled_output[1:] + [input]):
@@ -427,7 +388,7 @@ if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
     # TODO: Define reasonable defaults and optionally more parameters
-    parser.add_argument("--batch_size", default=None, type=int, help="Batch size.")
+    parser.add_argument("--batch-size", default=None, type=int, help="Batch size.")
     parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
