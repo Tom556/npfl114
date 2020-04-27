@@ -50,7 +50,7 @@ class Network:
 
     MAX_SIZE = 224
     NUM_ANCHORS = 64
-    PREDICTION_THRESHOLD = 0.5
+    PREDICTION_THRESHOLD = 0.4
 
     def __init__(self, args):
         tf.executing_eagerly()
@@ -191,8 +191,8 @@ class Network:
                 preds = self._model(input, training=False)
                 input_anchors = tf.concat([tf.squeeze(input[1]), tf.squeeze(input[2]), tf.squeeze(input[3])], axis=0)
                 predicted_classes = tf.concat([tf.squeeze(preds[0]), tf.squeeze(preds[1]), tf.squeeze(preds[2])], axis=0)
-                class_probs = tf.reduce_max(predicted_classes, axis=1)
-                predicted_classes= tf.argmax(predicted_classes, axis=1)
+                class_probs = tf.reduce_max(predicted_classes[:,1:], axis=1)
+                predicted_classes= tf.argmax(predicted_classes[:,1:], axis=1)
                 #print(tf.shape(class_probs))
 
                 predicted_frcnn =tf.concat([tf.squeeze(preds[3]), tf.squeeze(preds[4]), tf.squeeze(preds[5])], axis=0)
@@ -230,14 +230,14 @@ class Network:
             anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
                                                                     [l_anchors, bbox_classes, bboxes, 0.5],
                                                                     [tf.int32, tf.float32, tf.float32])
-            pos_indices = tf.random.shuffle(tf.where(anchor_classes > -1))[:self.NUM_ANCHORS]
-            neg_indices = tf.random.shuffle(tf.where(tf.logical_and(anchor_classes == -1, scores ==1)))[:self.NUM_ANCHORS]
+            pos_indices = tf.random.shuffle(tf.where(anchor_classes > 0))[:self.NUM_ANCHORS]
+            neg_indices = tf.random.shuffle(tf.where(tf.logical_and(anchor_classes == 0, scores == 1)))[:self.NUM_ANCHORS]
             sel_indices = tf.squeeze(tf.concat([pos_indices, neg_indices], 0))
             #print(tf.shape(sel_indices)
             # sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
             layer_anchors.append(tf.gather(l_anchors, sel_indices))
             layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
-            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS))
+            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS +1))
 
             layer_anchors.reverse()
             layer_frcnns.reverse()
@@ -341,7 +341,7 @@ class Network:
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcB_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
 
-            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
+            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS +1, activation='softmax', kernel_initializer='zero'),
                                         name='dense_class_{}'.format(idx))(out)
 
             out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
