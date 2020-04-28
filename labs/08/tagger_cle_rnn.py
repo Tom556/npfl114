@@ -14,13 +14,18 @@ class Network:
         # TODO(we): Implement a one-layer RNN network. The input
         # `word_ids` consists of a batch of sentences, each
         # a sequence of word indices. Padded words have index 0.
+        word_ids = tf.keras.layers.Input(shape=[None])
 
         # TODO(we): Embed input words with dimensionality `args.we_dim`,
         # using `mask_zero=True`.
 
+        wle = tf.keras.layers.Embedding(num_words, args.we_dim, mask_zero=True)(word_ids)
+
         # TODO: The RNN character-level embeddings utilize the input `charseqs`
         # containing a sequence of character indices for every input word.
         # Again, padded characters have index 0.
+
+        charseqs = tf.keras.layers.Input(shape=[None, None])
 
         # Because cuDNN implementation of RNN does not allow empty sequences,
         # we need to consider only charseqs for valid words.
@@ -32,6 +37,11 @@ class Network:
         # through a bidirectional GRU with dimension `args.cle_dim`, concatenating
         # results from forward and backward pass.
 
+        cle = tf.keras.layers.Embedding(num_chars, args.cle_dim, mask_zero=True)(cle)
+
+        cle = tf.keras.layers.Bidirectional(
+                tf.keras.layers.GRU(args.cle_dim, return_sequences=False, name="CL_GRU"), merge_mode='concat')(cle)
+
         # Now we copy cle-s back to the original shape.
         cle = tf.scatter_nd(valid_words, cle, [tf.shape(charseqs)[0], tf.shape(charseqs)[1], cle.shape[-1]])
 
@@ -39,12 +49,26 @@ class Network:
         # Use a `tf.keras.layers.Concatenate()` layer, which preserves masks
         # (contrary to raw methods like tf.concat).
 
+        x = tf.keras.layers.Concatenate()([wle, cle])
+
         # TODO(we): Create specified `args.rnn_cell` RNN cell (LSTM, GRU) with
         # dimension `args.rnn_cell_dim` and apply it in a bidirectional way on
         # the embedded words, summing the outputs of forward and backward RNNs.
 
+        if args.rnn_cell == 'LSTM':
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM"), merge_mode='sum')(x)
+        elif args.rnn_cell == 'GRU':
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(x)
+        else:
+            x = tf.keras.layers.Bidirectional(
+                tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(x)
+
         # TODO(we): Add a softmax classification layer into `num_tags` classes, storing
         # the outputs in `predictions`.
+
+        predictions = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(num_tags, activation='softmax'))(x)
 
         self.model = tf.keras.Model(inputs=[word_ids, charseqs], outputs=predictions)
         self.model.compile(optimizer=tf.optimizers.Adam(),
@@ -61,6 +85,12 @@ class Network:
             # Additionally, pass `reset_metrics=True`.
             #
             # Store the computed metrics in `metrics`.
+            # word_ids = tf.keras.preprocessing.sequence.pad_sequences(batch[dataset.FORMS].word_ids, padding='post')
+            # charseqs = tf.keras.preprocessing.sequence.pad_sequences(batch[dataset.FORMS].word_ids, padding='post')
+
+            metrics = self.model.train_on_batch([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs],
+                                                batch[dataset.TAGS].word_ids,
+                                                reset_metrics=True)
 
             # Generate the summaries each 100 steps
             if self.model.optimizer.iterations % 100 == 0:
@@ -71,11 +101,18 @@ class Network:
 
     def evaluate(self, dataset, dataset_name, args):
         # We assume that model metric are already resetted at this point.
+        self.model.reset_metrics()
         for batch in dataset.batches(args.batch_size):
             # TODO: Evaluate the given batch with `test_on_batch`, using the
             # same inputs as in training, but pass `reset_metrics=False` to
             # aggregate the metrics. Store the metrics of the last batch as `metrics`.
-        self.model.reset_metrics()
+
+            # word_ids = tf.keras.preprocessing.sequence.pad_sequences(batch[dataset.FORMS].word_ids, padding='post')
+            # charseqs = tf.keras.preprocessing.sequence.pad_sequences(batch[dataset.FORMS].charseqs, padding='post')
+            #metrics = self.model.test_on_batch([word_ids, charseqs],
+            metrics = self.model.test_on_batch([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs],
+                                               batch[dataset.TAGS].word_ids,
+                                               reset_metrics=False)
 
         metrics = dict(zip(self.model.metrics_names, metrics))
         with self._writer.as_default():
