@@ -56,13 +56,9 @@ class Network:
         tf.executing_eagerly()
         self.base_model = self.efficient_net(args)
 
-        # self.anchors = tf.constant([get_all_anchors(3, np.sqrt(self.SCALES * np.power(2, l)), (0.5, 1., 2.), self.MAX_SIZE) / self.MAX_SIZE
-        #                          for l in range(3, 6)])
-
         self.anchor_generator = MultiscaleGridAnchorGenerator(min_level=3, max_level=5, anchor_scale=4,
                                                               aspect_ratios=[0.5, 1., 2.], scales_per_octave=3, normalize_coordinates=False)
 
-        # print([(int(self.MAX_SIZE / 2**l), int(self.MAX_SIZE / 2**l)) for l in [2,3,4]])
         self.anchors = self.anchor_generator.generate([(int(self.MAX_SIZE / 2**l), int(self.MAX_SIZE / 2**l)) for l in [3,4,5]]) #, im_height=self.MAX_SIZE, im_width=self.MAX_SIZE)] # [(1,1)]*3)]
 
         efficient_net = self.efficient_net(args)
@@ -75,26 +71,29 @@ class Network:
         self._callbacks = []
         self._optimizer = self.get_optimizer(args)
 
-        self._model.compile(
-            optimizer = self._optimizer,
-            loss=[tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
-                  tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
-                  tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
-                  fast_cnn_loss,
-                  fast_cnn_loss,
-                  fast_cnn_loss],
-            metrics=[[tf.metrics.CategoricalAccuracy(name='accuracy_1')],
-                     [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
-                     [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
-                     [],[],[]])
+        self.losses_names = ['sigmoid_focal_ce_0','sigmoid_focal_ce_1', 'sigmoid_focal_ce_2',
+                             'huber_0', 'huber_1', 'huber_2']
 
+        # self._model.compile(
+        #     optimizer = self._optimizer,
+        #     loss=[tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+        #           tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+        #           tfa.losses.SigmoidFocalCrossEntropy(reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE),
+        #           fast_cnn_loss,
+        #           fast_cnn_loss,
+        #           fast_cnn_loss],
+        #     metrics=[[tf.metrics.CategoricalAccuracy(name='accuracy_1')],
+        #              [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
+        #              [tf.metrics.CategoricalAccuracy(name='accuracy_2')],
+        #              [],[],[]])
+        #
         self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
 
-        self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
-                                                                update_freq=100, profile_batch=0))
-        self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou',mode='max',
-                                                                patience=self.STOPPING_PATIENCE,
-                                                                restore_best_weights=True))
+        # self._callbacks.append(tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1,
+        #                                                         update_freq=100, profile_batch=0))
+        # self._callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_iou',mode='max',
+        #                                                         patience=self.STOPPING_PATIENCE,
+        #                                                         restore_best_weights=True))
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
@@ -127,7 +126,35 @@ class Network:
 
         return optimizer
 
-    #def
+    @tf.function
+    def frcnn_loss(self, predictions, targets, weights):
+        tot_loss = 0
+        all_losses = []
+        foreground = []
+        for class_preds, class_tgts, wghts in zip(predictions[:3], targets[:3], weights):
+            losses = tfa.losses.sigmoid_focal_crossentropy(class_preds, class_tgts)
+            loss = tf.reduce_sum(losses * wghts)
+            all_losses.append(loss)
+            tot_loss += loss
+            foreground.append(tf.cast(tf.reduce_any(class_tgts>0, axis=-1, keepdims=False), tf.float32))
+
+        for frcnn_preds, frcnn_tgts, wghts in zip(predictions[3:], targets[3:], foreground):
+            loss = tf.compat.v1.losses.huber_loss(frcnn_preds, frcnn_tgts, weights=tf.expand_dims(wghts, axis=-1))#reduction=tf.compat.v1.losses.Reduction.NONE) #weights=tf.broadcast_to(wghts, frnn_tgts.get_shape()))
+
+            #loss = tf.reduce_sum(losses * wghts)
+            tot_loss += loss
+            all_losses.append(loss)
+
+        return tot_loss, all_losses
+
+    @tf.function
+    def train_batch(self, inputs, targets, weights):
+        with tf.GradientTape() as tape:
+            predictions = self._model(inputs, training=True)
+            loss, losses = self.frcnn_loss(predictions, targets, weights)
+        gradients = tape.gradient(loss, self._model.trainable_variables)
+        self._optimizer.apply_gradients(zip(gradients, self._model.trainable_variables))
+        return losses
 
     def train(self, svhn, args):
 
@@ -136,22 +163,19 @@ class Network:
         train = train.shuffle(500, seed=args.seed)
         train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         train = train.map(self.preprocess_train)
-        for x in train.take(1):
-            for i in range(1,4):
-                print(len(x[0][i]))
-
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         for epoch in range(args.epochs):
-            for inputs, targets in train.take(100):
+            for inputs, targets, weights in train.take(1):
                 #self._model.train_on_batch(inputs, targets)
-                metrics = self._model.train_on_batch(inputs, targets, reset_metrics=True)
+                losses = self.train_batch(inputs, targets, weights)
 
                 # Generate the summaries each 10 steps
-                if self._model.optimizer.iterations % 10 == 0:
-                    tf.summary.experimental.set_step(self._model.optimizer.iterations)
+                if self._optimizer.iterations % 1 == 0:
+                    print('BooooM!')
+                    tf.summary.experimental.set_step(self._optimizer.iterations)
                     with self._writer.as_default():
-                        for name, value in zip(self._model.metrics_names, metrics):
+                        for name, value in zip(self.losses_names, losses):
                             tf.summary.scalar("train/{}".format(name), value)
 
             self.evaluate(svhn.dev, 'validation', args)
@@ -164,13 +188,13 @@ class Network:
         dataset = dataset.map(self.preprocess_train)
         dataset = dataset.batch(args.batch_size).prefetch(args.threads)
 
-        self._model.reset_metrics()
-        for inputs, targets in dataset.take(10):
-            metrics = self._model.test_on_batch(inputs, targets,reset_metrics=False)
+        for inputs, targets, weights in dataset.take(10):
+            predictions = self._model(inputs, training=False)
+            _, losses = self.frcnn_loss(predictions, targets, weights)
 
-        metrics = dict(zip(self._model.metrics_names, metrics))
+        metrics = dict(zip(self.losses_names, losses))
         with self._writer.as_default():
-            tf.summary.experimental.set_step(self._model.optimizer.iterations)
+            tf.summary.experimental.set_step(self._optimizer.iterations)
             for name, value in metrics.items():
                 tf.summary.scalar("{}/{}".format(dataset_name, name), value)
 
@@ -189,26 +213,29 @@ class Network:
 
             for input in dataset:
                 preds = self._model(input, training=False)
-                input_anchors = tf.concat([tf.squeeze(input[1]), tf.squeeze(input[2]), tf.squeeze(input[3])], axis=0)
-                predicted_classes = tf.concat([tf.squeeze(preds[0]), tf.squeeze(preds[1]), tf.squeeze(preds[2])], axis=0)
-                class_probs = tf.reduce_max(predicted_classes[:,1:], axis=1)
-                predicted_classes= tf.argmax(predicted_classes[:,1:], axis=1)
-                #print(tf.shape(class_probs))
+                input_anchors = tf.concat([input[1], input[2], input[3]], axis=1)
+                predicted_classes = tf.concat([preds[0], preds[1], preds[2]], axis=1)
+                class_probs = tf.reduce_max(predicted_classes, axis=-1)
+                predicted_classes= tf.argmax(predicted_classes, axis=-1)
 
-                predicted_frcnn =tf.concat([tf.squeeze(preds[3]), tf.squeeze(preds[4]), tf.squeeze(preds[5])], axis=0)
-                indicies = tf.squeeze(tf.image.non_max_suppression(predicted_frcnn , class_probs, 300, 0.7, self.PREDICTION_THRESHOLD))
+                predicted_frcnn =tf.concat([preds[3], preds[4], preds[5]], axis=1)
+                for exmpl_frcnn, exmpl_anchors, exmpl_class_prob, exmpl_class \
+                    in zip(tf.unstack(predicted_frcnn), tf.unstack(input_anchors), tf.unstack(class_probs), tf.unstack(predicted_classes)):
 
-                input_anchors = tf.gather(input_anchors, indicies).numpy()
-                predicted_frcnn = tf.gather(predicted_frcnn, indicies).numpy()
-                predicted_classes = tf.gather(predicted_classes, indicies).numpy()
+                    exmpl_bboxes = tf.concat([bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn) for anchor, frcnn in zip(tf.unstack(exmpl_anchors), tf.unstack(exmpl_frcnn))])
 
-                output = []
-                for anchor, frcnn, pred_class in zip(input_anchors, predicted_frcnn, predicted_classes):
-                    bbox = bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn)
-                    output.append(pred_class)
-                    output.extend(bbox)
 
-                print(*output, file=out_file)
+                    indicies = tf.squeeze(tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 300, 0.7, self.PREDICTION_THRESHOLD))
+
+                    exmpl_bboxes = tf.gather(exmpl_bboxes, indicies).numpy()
+                    exmpl_classes = tf.gather(exmpl_classes, indicies).numpy()
+
+                    output = []
+                    for bbox, pred_class in zip(exmpl_bboxes, exmpl_classes):
+                        output.append(pred_class)
+                        output.extend(bbox)
+
+                    print(*output, file=out_file)
 
     def preprocess_train(self, image, bboxes, bbox_classes):
         tf.executing_eagerly()
@@ -222,28 +249,28 @@ class Network:
         layer_anchors = []
         layer_frcnns = []
         layer_classes = []
+        layer_scores = []
 
         for l_anchors in self.anchors:
 
             l_anchors = l_anchors.get()
-            print(l_anchors.shape)
             anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
-                                                                    [l_anchors, bbox_classes, bboxes, 0.5],
+                                                                    [l_anchors, bbox_classes, bboxes, 0.7],
                                                                     [tf.int32, tf.float32, tf.float32])
-            pos_indices = tf.random.shuffle(tf.where(anchor_classes > 0))[:self.NUM_ANCHORS]
-            neg_indices = tf.random.shuffle(tf.where(tf.logical_and(anchor_classes == 0, scores == 1)))[:self.NUM_ANCHORS]
-            sel_indices = tf.squeeze(tf.concat([pos_indices, neg_indices], 0))
-            #print(tf.shape(sel_indices)
-            # sel_indices = tf.image.non_max_suppression(l_anchors, scores, 100, 0.5, 0.5) # tf.where(scores > 0.5) #
-            layer_anchors.append(tf.gather(l_anchors, sel_indices))
-            layer_frcnns.append(tf.gather(anchor_frcnns, sel_indices))
-            layer_classes.append(tf.one_hot(tf.gather(anchor_classes, sel_indices), depth=SVHN.LABELS +1))
+            # pos_indices = tf.random.shuffle(tf.where(anchor_classes > 0))[:self.NUM_ANCHORS]
+            # neg_indices = tf.random.shuffle(tf.where(tf.logical_and(anchor_classes == 0, scores == 1)))[:self.NUM_ANCHORS]
+            # sel_indices = tf.squeeze(tf.concat([pos_indices, neg_indices], 0))
+            layer_anchors.append(l_anchors)
+            layer_frcnns.append(anchor_frcnns)
+            layer_classes.append(tf.one_hot(anchor_classes, depth=SVHN.LABELS +1))
+            layer_scores.append(scores)
 
             layer_anchors.reverse()
             layer_frcnns.reverse()
             layer_classes.reverse()
+            layer_scores.reverse()
 
-        return tuple((tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns)))
+        return tuple((tuple([image] + layer_anchors), tuple(layer_classes + layer_frcnns), tuple(layer_scores)))
 
     def preprocess_predict(self, image):
         img_h = tf.shape(image)[0]
