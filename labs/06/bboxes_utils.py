@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import numpy as np
+import tensorflow as tf
 
 from svhn_dataset import SVHN
 
@@ -63,8 +64,8 @@ def bbox_from_fast_rcnn(anchor, fast_rcnn):
     anchor_y_center = anchor_height / 2. + anchor[SVHN.TOP]
     anchor_x_center = anchor_width / 2. + anchor[SVHN.LEFT]
 
-    bbox_height = np.exp(fast_rcnn[2]) * anchor_height
-    bbox_width = np.exp(fast_rcnn[3]) * anchor_width
+    bbox_height = tf.math.exp(fast_rcnn[2]) * anchor_height
+    bbox_width = tf.math.exp(fast_rcnn[3]) * anchor_width
 
     bbox_y_center = fast_rcnn[0] * anchor_height + anchor_y_center
     bbox_x_center = fast_rcnn[1] * anchor_width + anchor_x_center

@@ -140,7 +140,6 @@ class Network:
 
         for frcnn_preds, frcnn_tgts, wghts in zip(predictions[3:], targets[3:], foreground):
             loss = tf.compat.v1.losses.huber_loss(frcnn_preds, frcnn_tgts, weights=tf.expand_dims(wghts, axis=-1))#reduction=tf.compat.v1.losses.Reduction.NONE) #weights=tf.broadcast_to(wghts, frnn_tgts.get_shape()))
-
             #loss = tf.reduce_sum(losses * wghts)
             tot_loss += loss
             all_losses.append(loss)
@@ -216,17 +215,16 @@ class Network:
                 input_anchors = tf.concat([input[1], input[2], input[3]], axis=1)
                 predicted_classes = tf.concat([preds[0], preds[1], preds[2]], axis=1)
                 class_probs = tf.reduce_max(predicted_classes, axis=-1)
-                predicted_classes= tf.argmax(predicted_classes, axis=-1)
+                predicted_classes = tf.argmax(predicted_classes, axis=-1)
 
                 predicted_frcnn =tf.concat([preds[3], preds[4], preds[5]], axis=1)
                 for exmpl_frcnn, exmpl_anchors, exmpl_class_prob, exmpl_class \
                     in zip(tf.unstack(predicted_frcnn), tf.unstack(input_anchors), tf.unstack(class_probs), tf.unstack(predicted_classes)):
-
-                    exmpl_bboxes = tf.concat([bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn) for anchor, frcnn in zip(tf.unstack(exmpl_anchors), tf.unstack(exmpl_frcnn))])
-
+                    print("ZuuuuuuM!")
+                    exmpl_bboxes = tf.concat([bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn) for anchor, frcnn
+                                              in zip(tf.unstack(exmpl_anchors), tf.unstack(exmpl_frcnn))], axis=0)
 
                     indicies = tf.squeeze(tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 300, 0.7, self.PREDICTION_THRESHOLD))
-
                     exmpl_bboxes = tf.gather(exmpl_bboxes, indicies).numpy()
                     exmpl_classes = tf.gather(exmpl_classes, indicies).numpy()
 
