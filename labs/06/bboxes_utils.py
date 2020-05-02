@@ -104,7 +104,7 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     - considred indeces
     """
 
-    anchor_classes = np.zeros(len(anchors), np.int32)
+    anchor_classes = np.zeros(len(anchors), np.int32) - 1
     anchor_bboxes = np.zeros([len(anchors), 4], np.float32)
     weights = np.ones(len(anchors), np.float32)
 
@@ -131,7 +131,7 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
             break
         g_bbox_idx, g_bbox = max(indexed_bboxes, key=lambda x: bbox_iou(anchor, x[1]))
         if bbox_iou(anchor, g_bbox) >= iou_threshold:
-            anchor_classes[anchor_idx] = gold_classes[g_bbox_idx] + 1
+            anchor_classes[anchor_idx] = gold_classes[g_bbox_idx]
             anchor_bboxes[anchor_idx,:] = bbox_to_fast_rcnn(anchor, g_bbox)
         elif bbox_iou(anchor, g_bbox) > 0.3:
             weights[anchor_idx] = 0.

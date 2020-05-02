@@ -48,7 +48,7 @@ class Network:
     PLATEAU_PATIENCE = 10
     STOPPING_PATIENCE = 20
 
-    MAX_SIZE = 224
+    MAX_SIZE = 96
     NUM_ANCHORS = 64
     PREDICTION_THRESHOLD = 0.4
 
@@ -136,10 +136,10 @@ class Network:
             loss = tf.reduce_sum(losses * wghts)
             all_losses.append(loss)
             tot_loss += loss
-            foreground.append(tf.cast(tf.reduce_any(class_tgts>0, axis=-1, keepdims=False), tf.float32))
+            foreground.append(tf.cast(tf.reduce_any(class_tgts>0, axis=-1, keepdims=True), tf.float32))
 
         for frcnn_preds, frcnn_tgts, wghts in zip(predictions[3:], targets[3:], foreground):
-            loss = tf.compat.v1.losses.huber_loss(frcnn_preds, frcnn_tgts, weights=tf.expand_dims(wghts, axis=-1))#reduction=tf.compat.v1.losses.Reduction.NONE) #weights=tf.broadcast_to(wghts, frnn_tgts.get_shape()))
+            loss = tf.compat.v1.losses.huber_loss(frcnn_preds, frcnn_tgts, weights=wghts)#reduction=tf.compat.v1.losses.Reduction.NONE) #weights=tf.broadcast_to(wghts, frnn_tgts.get_shape()))
             #loss = tf.reduce_sum(losses * wghts)
             tot_loss += loss
             all_losses.append(loss)
@@ -165,13 +165,13 @@ class Network:
         train = train.batch(args.batch_size).prefetch(args.threads)
 
         for epoch in range(args.epochs):
-            for inputs, targets, weights in train.take(1):
+            for inputs, targets, weights in train.take(50):
+                print("Train on Barch!")
                 #self._model.train_on_batch(inputs, targets)
                 losses = self.train_batch(inputs, targets, weights)
 
                 # Generate the summaries each 10 steps
-                if self._optimizer.iterations % 1 == 0:
-                    print('BooooM!')
+                if self._optimizer.iterations % 5 == 0:
                     tf.summary.experimental.set_step(self._optimizer.iterations)
                     with self._writer.as_default():
                         for name, value in zip(self.losses_names, losses):
@@ -188,6 +188,7 @@ class Network:
         dataset = dataset.batch(args.batch_size).prefetch(args.threads)
 
         for inputs, targets, weights in dataset.take(10):
+            print("Evaluate on batch!")
             predictions = self._model(inputs, training=False)
             _, losses = self.frcnn_loss(predictions, targets, weights)
 
@@ -211,6 +212,7 @@ class Network:
         with open(os.path.join(args.logdir, "{}_svhn_classification.txt".format(dataset_name)), "w", encoding="utf-8") as out_file:
 
             for input, img_h in dataset: #.take(1):
+                print("Predicting batch!")
                 preds = self._model(input, training=False)
                 input_anchors = tf.concat([input[1], input[2], input[3]], axis=1)
                 predicted_classes = tf.concat([preds[0], preds[1], preds[2]], axis=1)
@@ -234,6 +236,7 @@ class Network:
                         output.extend(bbox / self.MAX_SIZE * img_h)
 
                     print(*output, file=out_file)
+                print("Batch predicted!")
 
     def preprocess_train(self, image, bboxes, bbox_classes):
         tf.executing_eagerly()
@@ -260,7 +263,7 @@ class Network:
             # sel_indices = tf.squeeze(tf.concat([pos_indices, neg_indices], 0))
             layer_anchors.append(l_anchors)
             layer_frcnns.append(anchor_frcnns)
-            layer_classes.append(tf.one_hot(anchor_classes, depth=SVHN.LABELS +1))
+            layer_classes.append(tf.one_hot(anchor_classes, depth=SVHN.LABELS))
             layer_scores.append(scores)
 
             layer_anchors.reverse()
@@ -363,12 +366,12 @@ class Network:
             roi_pooled = RoIPooling(3, 3)((x, layer_rois / self.MAX_SIZE))
 
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Flatten(name='flatten'))(roi_pooled)
-            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcA_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(256, activation='relu', name='fcA_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
-            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcB_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(256, activation='relu', name='fcB_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
 
-            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS +1, activation='softmax', kernel_initializer='zero'),
+            out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
                                         name='dense_class_{}'.format(idx))(out)
 
             out_regr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(4 , activation='linear', kernel_initializer='zero'),
