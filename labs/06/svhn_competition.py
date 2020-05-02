@@ -210,7 +210,7 @@ class Network:
 
         with open(os.path.join(args.logdir, "{}_svhn_classification.txt".format(dataset_name)), "w", encoding="utf-8") as out_file:
 
-            for input in dataset:
+            for input, img_h in dataset: #.take(1):
                 preds = self._model(input, training=False)
                 input_anchors = tf.concat([input[1], input[2], input[3]], axis=1)
                 predicted_classes = tf.concat([preds[0], preds[1], preds[2]], axis=1)
@@ -221,17 +221,17 @@ class Network:
                 for exmpl_frcnn, exmpl_anchors, exmpl_class_prob, exmpl_class \
                     in zip(tf.unstack(predicted_frcnn), tf.unstack(input_anchors), tf.unstack(class_probs), tf.unstack(predicted_classes)):
                     print("ZuuuuuuM!")
-                    exmpl_bboxes = tf.concat([bboxes_utils.bbox_from_fast_rcnn(anchor, frcnn) for anchor, frcnn
+                    exmpl_bboxes = tf.concat([tf.numpy_function(bboxes_utils.bbox_from_fast_rcnn, [anchor, frcnn],[tf.float32]) for anchor, frcnn
                                               in zip(tf.unstack(exmpl_anchors), tf.unstack(exmpl_frcnn))], axis=0)
 
-                    indicies = tf.squeeze(tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 300, 0.7, self.PREDICTION_THRESHOLD))
-                    exmpl_bboxes = tf.gather(exmpl_bboxes, indicies).numpy()
-                    exmpl_classes = tf.gather(exmpl_classes, indicies).numpy()
+                    indicies = tf.squeeze(tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 10, 0.7, self.PREDICTION_THRESHOLD))
+                    exmpl_bboxes = tf.gather(exmpl_bboxes, indicies)
+                    exmpl_classes = tf.gather(exmpl_classes, indicies)
 
                     output = []
-                    for bbox, pred_class in zip(exmpl_bboxes, exmpl_classes):
+                    for bbox, pred_class in zip(exmpl_bboxes.numpy(), exmpl_classes.numpy()):
                         output.append(pred_class)
-                        output.extend(bbox)
+                        output.extend(bbox / self.MAX_SIZE * img_h)
 
                     print(*output, file=out_file)
 
@@ -280,15 +280,17 @@ class Network:
 
         for l_anchors in self.anchors:
             l_anchors = l_anchors.get()
-            sel_indices = tf.squeeze(
-                tf.where(
-                    tf.reduce_all(
-                        tf.logical_and(l_anchors >= 0, l_anchors <= self.MAX_SIZE), axis=-1)))
-            layer_anchors.append(tf.gather(l_anchors, sel_indices))
+            layer_anchors.append(l_anchors)
+            # l_anchors = l_anchors.get()
+            # sel_indices = tf.squeeze(
+            #     tf.where(
+            #         tf.reduce_all(
+            #             tf.logical_and(l_anchors >= 0, l_anchors <= self.MAX_SIZE), axis=-1)))
+            # layer_anchors.append(tf.gather(l_anchors, sel_indices))
 
         layer_anchors.reverse()
 
-        return tuple([image] + layer_anchors)
+        return tuple(tuple([image] + layer_anchors), img_h)
 
     def efficient_net(self, args):
 
