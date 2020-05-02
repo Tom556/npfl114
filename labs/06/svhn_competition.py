@@ -162,7 +162,7 @@ class Network:
         train = train.shuffle(500, seed=args.seed)
         train = train.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         train = train.map(self.preprocess_train)
-        train = train.batch(args.batch_size).prefetch(args.threads)
+        train = train.batch(args.batch_size).prefetch(10)
 
         for epoch in range(args.epochs):
             for inputs, targets, weights in train.take(50):
@@ -340,17 +340,26 @@ class Network:
         down_scaled_output.reverse()
 
         filters = (1280, 112, 40)
+        filter_size = 64
 
         for idx, l_idx in enumerate(range(max_layer,min_layer-1,-1)):
             f_map = down_scaled_output[l_idx-1]
             layer_rois = rois[idx]
             up_filters = filters[idx]
 
+            f_map = tf.keras.layers.Conv2D(filter_size,
+                                           kernel_size=1,
+                                           strides=1,
+                                           padding='same',
+                                           kernel_initializer=CONV_KERNEL_INITIALIZER,
+                                           kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                           name='horizontal_conv_' + str(idx))(f_map)
+
             if idx == 0:
                 x = f_map
 
             else:
-                x = tf.keras.layers.Conv2DTranspose(filters=up_filters,
+                x = tf.keras.layers.Conv2DTranspose(filters=filter_size,
                                                     kernel_size=1,
                                                     strides=2,
                                                     padding='same',
