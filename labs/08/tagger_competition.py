@@ -45,8 +45,6 @@ class Network:
         cle = tf.gather_nd(charseqs, valid_words)
         cle = tf.keras.layers.Embedding(num_chars, args.cle_dim, mask_zero=True)(cle)
 
-        if args.rnn_cle:
-            print('aaaa!')
         cle = tf.keras.layers.Bidirectional(
                 tf.keras.layers.GRU(args.cle_dim, return_sequences=False, name="CL_GRU"), merge_mode='concat')(cle)
 
@@ -91,10 +89,9 @@ class Network:
                 for name, value in zip(self.model.metrics_names, metrics):
                     tf.summary.scalar("train/{}".format(name), value)
 
-
     def evaluate(self, dataset, dataset_name, args):
         self.model.reset_metrics()
-        for batch in dataset.batches(args.batch_size):
+        for batch in tqdm(dataset.batches(args.batch_size), desc="Evaluation on {}".format(dataset_name)):
             metrics = self.model.test_on_batch([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs],
                                                batch[dataset.TAGS].word_ids,
                                                reset_metrics=False)
@@ -107,23 +104,24 @@ class Network:
                 print("{} {}: {}".format(dataset_name, name, value))
 
     def predict(self, dataset, args):
+        predictions = []  # self.model.predict([dataset[dataset.FORMS].word_ids, dataset[dataset.FORMS].charseqs],batch_size=args.batch_size)
+        for i, batch in enumerate(tqdm(dataset.batches(args.batch_size), desc="Predicting!")):
+            prediction = self.model.predict([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs])
+            prediction = prediction.argmax(axis=-1)
+            predictions += list(prediction)
 
-        predictions = []
-        for batch in dataset.batches(args.batch_size):
-            prediction = self.model([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs])
-            predictions += prediction
-
-        return predictions
+        print(predictions)
+        return (predictions)
 
     def test(self, pdt, args):
         out_path = "tagger_competition_test.txt"
         if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
         with open(out_path, "w", encoding="utf-8") as out_file:
-            for i, sentence in enumerate(self.predict(morpho.test, args)):
-                for j in range(len(morpho.test.data[morpho.test.FORMS].word_strings[i])):
-                    print(morpho.test.data[morpho.test.FORMS].word_strings[i][j],
-                          morpho.test.data[morpho.test.LEMMAS].word_strings[i][j],
-                          morpho.test.data[morpho.test.TAGS].words[sentence[j]],
+            for i, sentence in enumerate(self.predict(pdt.test, args)):
+                for j in range(len(pdt.test.data[pdt.test.FORMS].word_strings[i])):
+                    print(pdt.test.data[pdt.test.FORMS].word_strings[i][j],
+                          pdt.test.data[pdt.test.LEMMAS].word_strings[i][j],
+                          pdt.test.data[pdt.test.TAGS].words[sentence[j]],
                           sep="\t", file=out_file)
                 print(file=out_file)
 
@@ -214,7 +212,7 @@ if __name__ == "__main__":
     # Create the network and train
     network = Network(morpho, args)
     network.train(morpho, args)
-
+    network.test(morpho,args)
 
     # Generate test set annotations, but to allow parallel execution, create it
     # in in args.logdir if it exists.
