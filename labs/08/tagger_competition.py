@@ -13,13 +13,21 @@ from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
 class Network:
+
+
+    ES_DELTA = 1e-4
+    ES_PATIENCE = 4
+    ONPLATEAU_PATIENCE = 2
     def __init__(self, pdt, args):
 
         num_words = len(pdt.train.data[morpho.train.FORMS].words)
-        num_tags = len(pdt.train.data[morpho.train.TAGS].words)
+        self.num_tags = len(pdt.train.data[morpho.train.TAGS].words)
         num_chars = len(pdt.train.data[morpho.train.FORMS].alphabet)
 
-        word_ids = tf.keras.layers.Input(shape=[None])
+        self._callbacks = []
+        self._optimizer = self.get_optimizer(args)
+
+        word_ids = tf.keras.layers.Input(shape=[None], ragged=False)
         wle = tf.keras.layers.Embedding(num_words, args.we_dim, mask_zero=True)(word_ids)
         charseqs = tf.keras.layers.Input(shape=[None, None])
         valid_words = tf.where(word_ids != 0)
@@ -27,12 +35,13 @@ class Network:
         cle = self.cle_embedding(charseqs, valid_words, num_chars, args)
 
         hidden = tf.keras.layers.Concatenate()([wle, cle])
-
-        args.rnn_cell_dim = args.we_dim + args.cle_dim * 2
-
+        hidden = tf.keras.layers.BatchNormalization()(hidden)
         hidden = self.bidirectional_rnn(hidden, args)
+        hidden = tf.keras.layers.Dropout(args.dropout)(hidden)
 
-        predictions = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(num_tags, activation='softmax'))(hidden)
+        predictions = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(self.num_tags,
+                                                                            activation='softmax',
+                                                                            kernel_regularizer=tf.keras.regularizers.l2(args.l2)))(hidden)
 
         self.model = tf.keras.Model(inputs=[word_ids, charseqs], outputs=predictions)
         self.model.compile(optimizer=self.get_optimizer(args),
@@ -40,6 +49,8 @@ class Network:
                            metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
 
         self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
+
+        lowest_loss = np.inf
 
     def cle_embedding(self, charseqs, valid_words, num_chars, args):
         cle = tf.gather_nd(charseqs, valid_words)
@@ -52,35 +63,55 @@ class Network:
         return cle
 
     def bidirectional_rnn(self, hidden, args):
-        residual = hidden
-        for _ in range(args.num_layers):
+        for i in range(args.num_layers):
+            residual = hidden
             if args.rnn_cell == 'LSTM':
                 hidden = tf.keras.layers.Bidirectional(
-                    tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM"), merge_mode='sum')(hidden)
+                    tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM", kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                    merge_mode='sum')(hidden)
             elif args.rnn_cell == 'GRU':
                 hidden = tf.keras.layers.Bidirectional(
-                    tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(hidden)
+                    tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU", kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                    merge_mode='sum')(hidden)
             else:
                 hidden = tf.keras.layers.Bidirectional(
-                    tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU"), merge_mode='sum')(hidden)
+                    tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU", kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                    merge_mode='sum')(hidden)
+            if i != 0:
+                hidden += residual
 
-            hidden += residual
+            hidden = tf.keras.layers.BatchNormalization()(hidden)
 
         return hidden
 
     def train(self, pdt, args):
+
+        curr_patience = 0
+        best_weights = None
+
         for idx in range(args.epochs):
             for train_batch in tqdm(pdt.train.batches(args.batch_size), desc="Epoch {}".format(idx)):
                 self.train_batch(train_batch)
 
-            self.evaluate(pdt.dev, 'validation', args)
+            eval_loss = self.evaluate(pdt.dev, 'validation', args)
+
+            if eval_loss  < self.lowest_loss - self.ES_DELTA:
+                self.lowest_loss = eval_loss
+                best_weights = self.model.get_weights()
+                curr_patience = 0
+            else:
+                curr_patience += 1
+
+            if curr_patience > self.ES_PATIENCE:
+                self.model.set_weights(best_weights)
+                break
+
 
     def train_batch(self, batch):
         metrics = self.model.train_on_batch([batch[MorphoDataset.Dataset.FORMS].word_ids,
                                              batch[MorphoDataset.Dataset.FORMS].charseqs],
                                             batch[MorphoDataset.Dataset.TAGS].word_ids,
                                             reset_metrics=True)
-
 
         # Generate the summaries each 100 steps
         if self.model.optimizer.iterations % 100 == 0:
@@ -90,6 +121,7 @@ class Network:
                     tf.summary.scalar("train/{}".format(name), value)
 
     def evaluate(self, dataset, dataset_name, args):
+        loss = 0.
         self.model.reset_metrics()
         for batch in tqdm(dataset.batches(args.batch_size), desc="Evaluation on {}".format(dataset_name)):
             metrics = self.model.test_on_batch([batch[dataset.FORMS].word_ids, batch[dataset.FORMS].charseqs],
@@ -100,8 +132,11 @@ class Network:
         with self._writer.as_default():
             tf.summary.experimental.set_step(self.model.optimizer.iterations)
             for name, value in metrics.items():
+                if name == 'loss':
+                    loss = value
                 tf.summary.scalar("{}/{}".format(dataset_name, name), value)
                 print("{} {}: {}".format(dataset_name, name, value))
+        return loss
 
     def predict(self, dataset, args):
         predictions = []  # self.model.predict([dataset[dataset.FORMS].word_ids, dataset[dataset.FORMS].charseqs],batch_size=args.batch_size)
@@ -148,16 +183,16 @@ class Network:
 
         optimizer = None
         if args.optimizer == 'SGD':
-            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=args.momentum)
+            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
         elif args.optimizer == "RMSProp":
-            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule, momentum=args.momentum)
+            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
         elif args.optimizer == 'Adam':
-            optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
+            optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule, clipnorm=args.clip_norm)
 
         return optimizer
 
     def save(self, curr_date, args):
-        self.model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, 0.00), include_optimizer=False))
+        self.model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, self.lowest_loss)), include_optimizer=False)
 
 
 if __name__ == "__main__":
@@ -171,18 +206,23 @@ if __name__ == "__main__":
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
     # RNN architecture
     parser.add_argument("--num-layers", default=2, type=int, help="Number of RNN layers")
-    parser.add_argument("--rnn-cell-dim", default=512, type=int, help="Dimensionality of RNN latent vector")
+    parser.add_argument("--rnn-cell-dim", default=256, type=int, help="Dimensionality of RNN latent vector")
     parser.add_argument("--rnn-cell", default='LSTM', type=str, help='Type of RNN cell (LSTM, GRU, or SimpleRNN')
     # Embeddings
     parser.add_argument("--we-dim", default=128, type=int, help="Dimensionality of word embeddings")
-    parser.add_argument("--cle-dim", default=64, type=int, help="Dimensionality of character level embeddings")
+    parser.add_argument("--cle-dim", default=32, type=int, help="Dimensionality of character level embeddings")
     parser.add_argument("--rnn-cle", action='store_true', help="Whether to use RNN chracter level embeddings")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
     parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
-    parser.add_argument("--learning-rate-final", default=None, type=float, help="Final learning rate.")
+    parser.add_argument("--learning-rate-final", default=1e-6, type=float, help="Final learning rate.")
+    # Regularization
+    parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
+    parser.add_argument("--label-smoothing", default=0., type=float, help="Label smoothing.")
+    parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    parser.add_argument('--clip-norm', default=2., type=float, help="Value of l2 norm clipping")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
@@ -213,7 +253,4 @@ if __name__ == "__main__":
     network = Network(morpho, args)
     network.train(morpho, args)
     network.test(morpho,args)
-
-    # Generate test set annotations, but to allow parallel execution, create it
-    # in in args.logdir if it exists.
-
+    network.save(curr_date, args)
