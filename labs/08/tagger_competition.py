@@ -7,6 +7,8 @@ import re
 import numpy as np
 import tensorflow as tf
 
+from tqdm import tqdm
+
 from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
@@ -69,8 +71,8 @@ class Network:
         return hidden
 
     def train(self, pdt, args):
-        for _ in range(args.epochs):
-            for train_batch in pdt.train.batches(args.batch_size):
+        for idx in range(args.epochs):
+            for train_batch in tqdm(pdt.train.batches(args.batch_size), desc="Epoch {}".format(idx)):
                 self.train_batch(train_batch)
 
             self.evaluate(pdt.dev, 'validation', args)
@@ -102,7 +104,7 @@ class Network:
             tf.summary.experimental.set_step(self.model.optimizer.iterations)
             for name, value in metrics.items():
                 tf.summary.scalar("{}/{}".format(dataset_name, name), value)
-                print()
+                print("{} {}: {}".format(dataset_name, name, value))
 
     def predict(self, dataset, args):
 
