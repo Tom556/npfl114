@@ -3,6 +3,7 @@ import argparse
 import datetime
 import os
 import re
+from tqdm import tqdm
 
 import numpy as np
 import tensorflow as tf
@@ -48,7 +49,7 @@ class Network:
     PLATEAU_PATIENCE = 10
     STOPPING_PATIENCE = 20
 
-    MAX_SIZE = 96
+    MAX_SIZE = 224
     NUM_ANCHORS = 64
     PREDICTION_THRESHOLD = 0.4
 
@@ -165,8 +166,7 @@ class Network:
         train = train.batch(args.batch_size).prefetch(10)
 
         for epoch in range(args.epochs):
-            for inputs, targets, weights in train.take(50):
-                print("Train on Barch!")
+            for inputs, targets, weights in tqdm(train.take(50), desc="Train on Barch!"):
                 #self._model.train_on_batch(inputs, targets)
                 losses = self.train_batch(inputs, targets, weights)
 
@@ -185,11 +185,10 @@ class Network:
         dataset = dataset.shuffle(500, seed=args.seed)
         dataset = dataset.map(lambda x: (x["image"], x['bboxes'], x["classes"]))
         dataset = dataset.map(self.preprocess_train)
-        dataset = dataset.batch(args.batch_size).prefetch(args.threads)
+        dataset = dataset.batch(args.batch_size).prefetch(10)
 
-        for inputs, targets, weights in dataset.take(10):
-            print("Evaluate on batch!")
-            predictions = self._model(inputs, training=False)
+        for inputs, targets, weights in tqdm(dataset.take(10), desc="Evaluage on batch!"):
+            predictions = self._model.predict_on_batch(inputs)
             _, losses = self.frcnn_loss(predictions, targets, weights)
 
         metrics = dict(zip(self.losses_names, losses))
@@ -207,31 +206,30 @@ class Network:
         dataset = dataset.map(SVHN.parse)
         dataset = dataset.map(lambda x: x["image"])
         dataset = dataset.map(self.preprocess_predict)
-        dataset = dataset.batch(args.batch_size).prefetch(args.threads)
+        dataset = dataset.batch(args.batch_size).prefetch(10)
 
         with open(os.path.join(args.logdir, "{}_svhn_classification.txt".format(dataset_name)), "w", encoding="utf-8") as out_file:
 
-            for input, img_h in dataset: #.take(1):
-                print("Predicting batch!")
-                preds = self._model(input, training=False)
+            for input, img_hs in tqdm(dataset.take(3), desc="Predicting on batch!"): #.take(1):
+
+                preds = self._model.predict_on_batch(input)
                 input_anchors = tf.concat([input[1], input[2], input[3]], axis=1)
                 predicted_classes = tf.concat([preds[0], preds[1], preds[2]], axis=1)
                 class_probs = tf.reduce_max(predicted_classes, axis=-1)
                 predicted_classes = tf.argmax(predicted_classes, axis=-1)
 
                 predicted_frcnn =tf.concat([preds[3], preds[4], preds[5]], axis=1)
-                for exmpl_frcnn, exmpl_anchors, exmpl_class_prob, exmpl_class \
-                    in zip(tf.unstack(predicted_frcnn), tf.unstack(input_anchors), tf.unstack(class_probs), tf.unstack(predicted_classes)):
-                    print("ZuuuuuuM!")
-                    exmpl_bboxes = tf.concat([tf.numpy_function(bboxes_utils.bbox_from_fast_rcnn, [anchor, frcnn],[tf.float32]) for anchor, frcnn
+                for exmpl_frcnn, exmpl_anchors, exmpl_class_prob, exmpl_class, img_h \
+                    in zip(tf.unstack(predicted_frcnn), tf.unstack(input_anchors), tf.unstack(class_probs), tf.unstack(predicted_classes), tf.unstack(img_hs)):
+                    exmpl_bboxes = tf.stack([tf.numpy_function(bboxes_utils.bbox_from_fast_rcnn, [anchor, frcnn],[tf.float32]) for anchor, frcnn
                                               in zip(tf.unstack(exmpl_anchors), tf.unstack(exmpl_frcnn))], axis=0)
 
-                    indicies = tf.squeeze(tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 10, 0.7, self.PREDICTION_THRESHOLD))
+                    indicies = tf.image.non_max_suppression(exmpl_bboxes, exmpl_class_prob, 10, 0.7, self.PREDICTION_THRESHOLD)
                     exmpl_bboxes = tf.gather(exmpl_bboxes, indicies)
-                    exmpl_classes = tf.gather(exmpl_classes, indicies)
+                    exmpl_class = tf.gather(exmpl_class, indicies)
 
                     output = []
-                    for bbox, pred_class in zip(exmpl_bboxes.numpy(), exmpl_classes.numpy()):
+                    for bbox, pred_class in zip(exmpl_bboxes.numpy(), exmpl_class.numpy()):
                         output.append(pred_class)
                         output.extend(bbox / self.MAX_SIZE * img_h)
 
@@ -255,6 +253,7 @@ class Network:
         for l_anchors in self.anchors:
 
             l_anchors = l_anchors.get()
+            l_anchors = tf.random.shuffle(l_anchors)[:l_anchors.shape[0] // 10]
             anchor_classes, anchor_frcnns, scores= tf.numpy_function(bboxes_utils.bboxes_training,
                                                                     [l_anchors, bbox_classes, bboxes, 0.7],
                                                                     [tf.int32, tf.float32, tf.float32])
@@ -283,17 +282,18 @@ class Network:
 
         for l_anchors in self.anchors:
             l_anchors = l_anchors.get()
-            layer_anchors.append(l_anchors)
+            # layer_anchors.append(l_anchors)
             # l_anchors = l_anchors.get()
-            # sel_indices = tf.squeeze(
-            #     tf.where(
-            #         tf.reduce_all(
-            #             tf.logical_and(l_anchors >= 0, l_anchors <= self.MAX_SIZE), axis=-1)))
-            # layer_anchors.append(tf.gather(l_anchors, sel_indices))
+            sel_indices = tf.squeeze(
+                tf.where(
+                    tf.reduce_all(
+                        tf.logical_and(l_anchors >= 0, l_anchors <= self.MAX_SIZE), axis=-1)))
+            layer_anchors.append(tf.random.shuffle(tf.gather(l_anchors, sel_indices))[:sel_indices.shape[0] // 10])
+
 
         layer_anchors.reverse()
 
-        return tuple(tuple([image] + layer_anchors), img_h)
+        return tuple((tuple([image] + layer_anchors), img_h))
 
     def efficient_net(self, args):
 
@@ -340,7 +340,7 @@ class Network:
         down_scaled_output.reverse()
 
         filters = (1280, 112, 40)
-        filter_size = 64
+        filter_size = 128
 
         for idx, l_idx in enumerate(range(max_layer,min_layer-1,-1)):
             f_map = down_scaled_output[l_idx-1]
@@ -375,9 +375,9 @@ class Network:
             roi_pooled = RoIPooling(3, 3)((x, layer_rois / self.MAX_SIZE))
 
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Flatten(name='flatten'))(roi_pooled)
-            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(256, activation='relu', name='fcA_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcA_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
-            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(256, activation='relu', name='fcB_{}'.format(idx)))(out)
+            out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1024, activation='relu', name='fcB_{}'.format(idx)))(out)
             out = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(0.5))(out)
 
             out_class = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(SVHN.LABELS, activation='softmax', kernel_initializer='zero'),
