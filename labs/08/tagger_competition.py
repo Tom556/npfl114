@@ -50,7 +50,7 @@ class Network:
 
         self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
 
-        lowest_loss = np.inf
+        self.lowest_loss = np.inf
 
     def cle_embedding(self, charseqs, valid_words, num_chars, args):
         cle = tf.gather_nd(charseqs, valid_words)
@@ -95,7 +95,7 @@ class Network:
 
             eval_loss = self.evaluate(pdt.dev, 'validation', args)
 
-            if eval_loss  < self.lowest_loss - self.ES_DELTA:
+            if eval_loss < self.lowest_loss - self.ES_DELTA:
                 self.lowest_loss = eval_loss
                 best_weights = self.model.get_weights()
                 curr_patience = 0
