@@ -1,4 +1,4 @@
-### `tf.data.Dataset`
+### tf.data.Dataset
 
 - _How to look what is in a `tf.data.Dataset`?_
 
@@ -47,10 +47,33 @@
       print(*[element.numpy() for element in data])
   ```
 
+- _How to call numpy methods or other non-tf functions in `tf.data.Dataset.map`?_
+
+  You can use [tf.numpy_function](https://www.tensorflow.org/api_docs/python/tf/numpy_function)
+  to call a numpy function even in a computational graph. However, the results
+  have no static shape information and you need to set it manually – ideally
+  using [tf.ensure_shape](https://www.tensorflow.org/api_docs/python/tf/ensure_shape),
+  which both sets the static shape and verifies during execution that the real
+  shape mathes it.
+
+  For example, to use the `bboxes_training` method from
+  [bboxes_utils](#bboxes_utils), you could do something like:
+
+  ```python
+  anchors = np.array(...)
+
+  def prepare_data(example):
+      anchor_classes, anchor_bboxes = tf.numpy_function(
+          bboxes_utils.bboxes_training, [anchors, example["classes"], example["bboxes"], 0.5], (tf.int32, tf.float32))
+      anchor_classes = tf.ensure_shape(anchor_classes, [len(anchors)])
+      anchor_bboxes = tf.ensure_shape(anchor_bboxes, [len(anchors), 4])
+      ...
+  ```
+
 - _How to use `ImageDataGenerator` in `tf.data.Dataset.map`?_
 
-  If you do not mind potentially large computation penalty, you can call
-  a Python function in `Dataset.map`:
+  The `ImageDataGenerator` offers a `.random_transform` method, so we can use
+  `tf.numpy_function` from the previous answer:
 
   ```python
   train_generator = tf.keras.preprocessing.image.ImageDataGenerator(...)
@@ -98,3 +121,33 @@
   - if `trainable == False`, the layer is always executed in inference regime;
   - if `trainable == True`, the training/inference regime is chosen according
     to the `training` option.
+
+### Masking
+
+- _How can sequences of different length be processed by a RNN?_
+
+  Keras employs [masking](https://www.tensorflow.org/guide/keras/masking_and_padding)
+  to indicate, which sequence elements are _valid_ and which are just _padding_.
+
+  Usually, a mask is created using
+  a [Embedding](https://www.tensorflow.org/api_docs/python/tf/keras/layers/Embedding)
+  or [Masking](https://www.tensorflow.org/api_docs/python/tf/keras/layers/Masking) layer
+  and is then automatically propagated. If `model.compile` is used, it is also
+  automatically utilized in losses and metrics.
+
+  However, in order for the mask propagation to work, you can use only
+  `tf.keras.layers` to process the data, not raw TF operations like `tf.concat`
+  or even the `+` operator (see `tf.keras.layers.Concatenate/Add/...`).
+
+- _How to compute masked losses and masked metrics manually?_
+
+  When you want to compute the losses and metrics manually, pass the mask as the
+  third argument to their `__call__` method (each individual component of
+  loss/metric is then multiplied by the mask, zeroing out the ones for padding
+  elements).
+
+- _How to print output masks of a `tf.keras.Model`?_
+
+  When you call the model directly, like `model(input_batch)`, the mask of each
+  output is available in a private `._keras_mask` property, so for single-output
+  models you can print it with `print(model(input_batch)._keras_mask)`.
