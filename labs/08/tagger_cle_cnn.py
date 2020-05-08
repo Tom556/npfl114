@@ -34,7 +34,7 @@ class Network:
         valid_words = tf.where(word_ids != 0)
         cle = tf.gather_nd(charseqs, valid_words)
 
-        # TODO: Embed the characters in `charseqs` using embeddings of size
+        # TODO: Embed the characters in `cle` using embeddings of size
         # `args.cle_dim`, not masking zero indices.
 
         cle = tf.keras.layers.Embedding(num_chars, args.cle_dim, mask_zero=False)(cle)
@@ -62,6 +62,7 @@ class Network:
         # - create a candidate output by using a Dense layer with relu activation;
         # - compute the result as the candidate output multiplied by the gate plus
         #   the input times one minus the gate.
+        # Store the results back in `cle` variable.
 
         t_gate = tf.keras.layers.Dense(cle.shape[-1], activation='sigmoid')(cle)
         hw_out = tf.keras.layers.Dense(cle.shape[-1], activation='relu')(cle)

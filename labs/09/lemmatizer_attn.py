@@ -57,14 +57,14 @@ class Network:
                 #   Because self.source_states does not change, you should in fact do it in `initialize`.
                 # - Pass `states` though self._model.attention_state_layer.
                 # - Sum the two outputs. However, the first has shape [a, b, c] and the second [a, c]. Therefore,
-                #   somehow expand the second to [a, b, c] first. (Hint: use broadcasting rules.)
-                # - Pass the sum through `tf.tanh`, then self._model.attention_weight_layer.
-                # - Then, run softmax on a suitable axis (the one corresponding to characters), generating `weights`.
+                #   expand the second to [a, b, c] or [a, 1, c] (the latter works because of broadcasting rules).
+                # - Pass the sum through `tf.tanh` and through the self._model.attention_weight_layer.
+                # - Then, run softmax on a suitable axis, generating `weights`.
                 # - Multiply `self.source_states` with `weights` and sum the result in the axis
                 #   corresponding to characters, generating `attention`. Therefore, `attention` is a a fixed-size
                 #   representation for every batch element, independently on how many characters had
                 #   the corresponding input forms.
-                # - Finally concatenate `inputs` and `attention` and return the result.
+                # - Finally concatenate `inputs` and `attention` (in this order) and return the result.
                 raise NotImplementedError()
 
             def initialize(self, layer_inputs, initial_state=None, mask=None):
@@ -83,8 +83,8 @@ class Network:
                 # TODO(lemmatizer_noattn): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
                 #   which returns `(outputs, [states])`.
                 # TODO(lemmatizer_noattn): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
-                # TODO(lemmatizer_noattn): Define `next_inputs` by embedding `time`-th words from `self.targets`.
-                # TODO(lemmatizer_noattn): Define `finished` as True if `time`-th word from `self.targets` is EOW, False otherwise.
+                # TODO(lemmatizer_noattn): Define `next_inputs` by embedding `time`-th chars from `self.targets`.
+                # TODO(lemmatizer_noattn): Define `finished` as True if `time`-th char from `self.targets` is EOW, False otherwise.
                 # TODO: Pass `next_inputs` through `self._with_attention(next_inputs, states)`.
                 return outputs, states, next_inputs, finished
 

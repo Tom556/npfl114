@@ -35,7 +35,8 @@ class Network:
         # TODO: Embed the characters in `cle` using embeddings of size
         # `args.cle_dim`, masking zero indices. Then, pass the embedded characters
         # through a bidirectional GRU with dimension `args.cle_dim`, concatenating
-        # results from forward and backward pass.
+        # results from forward and backward pass. Store the computed embeddings
+        # in `cle` variable.
 
         cle = tf.keras.layers.Embedding(num_chars, args.cle_dim, mask_zero=True)(cle)
 
