@@ -26,25 +26,29 @@ class Network:
         # Store the results in `self.model`.
 
         mfcc_signal = tf.keras.layers.Input([None, TimitMFCC.MFCC_DIM])
-        hidden = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(args.rnn_cell_dim, activation='relu'))(mfcc_signal)
+        hidden = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(args.rnn_cell_dim,
+                                                                       activation='relu',
+                                                                       kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                                                 name="input_dense")(mfcc_signal)
+        hidden = tf.keras.layers.LayerNormalization()(hidden)
         hidden = self.bidirectional_rnn(hidden, args)
-        output = tf.keras.layers.TimeDistributed(
+        outputs = tf.keras.layers.TimeDistributed(
             tf.keras.layers.Dense(len(TimitMFCC.LETTERS) + 1,
                                   activation='softmax',
-                                  kernel_regularizer=tf.keras.regularizers.l2(args.l2)))(hidden)
-        self.model = tf.keras.Model(inputs=mfcc_signal, outputs=output)
+                                  kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+            name="output_softmax")(hidden)
+        self.model = tf.keras.Model(inputs=mfcc_signal, outputs=outputs)
 
         # The following are just defaults, do not hesitate to modify them.
 
         self.optimal_loss = np.inf
+        self._clip_global_norm = args.clip_norm
         self._optimizer = self.get_optimizer(args)
         self._loss = tf.losses.SparseCategoricalCrossentropy()
         self._metrics = {"loss": tf.metrics.Mean(), "edit_distance": tf.metrics.Mean()}
         self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
 
-        # self.model.compile(optimizer=self._optimizer,
-        #                    loss=self._loss,
-        #                    metrics=self._metrics)
+        #self.model.compile()
 
     def bidirectional_rnn(self, hidden, args):
         for i in range(args.num_layers):
@@ -64,10 +68,13 @@ class Network:
                     tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU",
                                               kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
                     merge_mode='sum')(hidden)
-            if i != 0:
-                hidden += residual
+            # if i != 0:
 
-            hidden = tf.keras.layers.Dropout(args.dropout)(hidden)
+            hidden = tf.keras.layers.LayerNormalization()(hidden)
+
+            hidden += residual
+
+            #hidden = tf.keras.layers.Dropout(args.dropout)(hidden)
 
         return hidden
 
@@ -83,21 +90,17 @@ class Network:
             learning_rate_schedule = tf.optimizers.schedules.ExponentialDecay(args.learning_rate,
                                                                               decay_steps=decay_steps,
                                                                               decay_rate=decay_rate, staircase=False)
-        # elif args.decay == "onplateau":
-        #     learning_rate_schedule = args.learning_rate
-        #     self._callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5,
-        #                                                                 min_lr=args.learning_rate_final))
 
         else:
             learning_rate_schedule = args.learning_rate
 
         optimizer = None
         if args.optimizer == 'SGD':
-            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
+            optimizer = tf.optimizers.SGD(learning_rate=learning_rate_schedule, momentum=args.momentum)
         elif args.optimizer == "RMSProp":
-            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
+            optimizer = tf.optimizers.RMSprop(learning_rate=learning_rate_schedule, momentum=args.momentum)
         elif args.optimizer == 'Adam':
-            optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule, clipnorm=args.clip_norm)
+            optimizer = tf.optimizers.Adam(learning_rate=learning_rate_schedule)
 
         return optimizer
 
@@ -121,10 +124,10 @@ class Network:
         return tf.transpose(logits, [1, 0, 2])
 
     # Compute CTC loss using given logits, their lengths, and sparse targets.
-    def _ctc_loss(self, logits, logits_len, sparse_targets):
-        loss = tf.nn.ctc_loss(sparse_targets, logits, None, logits_len, blank_index=len(TimitMFCC.LETTERS))
+    def _ctc_loss(self, logits, logits_len, sparse_targets, targets_len):
+        loss = tf.nn.ctc_loss(sparse_targets, logits, targets_len, logits_len, blank_index=len(TimitMFCC.LETTERS))
         self._metrics["loss"](loss)
-        sparse_predictions = self._to_sparse(tf.math.argmax(logits, axis=-1, output_type=tf.int32))
+        sparse_predictions = self._ctc_predict(logits, logits_len)
         edit_distance = tf.edit_distance(sparse_predictions, sparse_targets, normalize=True)
         self._metrics["edit_distance"](edit_distance)
         return tf.reduce_mean(loss)
@@ -141,35 +144,41 @@ class Network:
         return edit_distance
 
     @tf.function(experimental_relax_shapes=True)
-    def train_batch(self, mfcc, mfcc_lens, targets):
+    def train_batch(self, mfcc, mfcc_lens, targets, targets_len):
         for metric in self._metrics.values():
             metric.reset_states()
         sparse_targets = self._to_sparse(targets)
         with tf.GradientTape() as tape:
             predicted_logits = self._compute_logits(mfcc, mfcc_lens, training=True)
-            loss = self._ctc_loss(predicted_logits, mfcc_lens, sparse_targets)
+            loss = self._ctc_loss(predicted_logits, mfcc_lens, sparse_targets, targets_len)
 
         gradients = tape.gradient(loss, self.model.trainable_variables)
+
+        if self._clip_global_norm:
+            gradients, global_norm = tf.clip_by_global_norm(gradients, self._clip_global_norm, name="gradient_clip_norm")
+        else:
+            global_norm = tf.linalg.global_norm(gradients)
         self._optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
         tf.summary.experimental.set_step(self._optimizer.iterations)
-        with self._writer.as_default(), tf.summary.record_if(self._optimizer.iterations % 100 == 0):
+        with self._writer.as_default(), tf.summary.record_if(self._optimizer.iterations % 20 == 0):
             for metric_name, metric in self._metrics.items():
                 tf.summary.scalar("train/" + metric_name, metric.result())
-                #print(f"{metric_name}: {metric.result().numpy()}")
+                tf.summary.scalar("train/gradient_norm", global_norm)
         return loss
 
     def train_epoch(self, dataset, args):
         progressbar = tqdm(dataset.batches(args.batch_size))
         for idx, batch in enumerate(progressbar):
-            batch_loss = self.train_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"])
-            progressbar.set_description(f"Training! loss: {batch_loss}")
+            batch_loss = self.train_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"], batch["letters_len"])
+            progressbar.set_description(f"Training, batch loss: {batch_loss:.4f}, "
+                                        f"edit distance: {self._metrics['edit_distance'].result():.4f}")
 
     @tf.function(experimental_relax_shapes=True)
-    def evaluate_batch(self, mfcc, mfcc_lens, targets):
+    def evaluate_batch(self, mfcc, mfcc_lens, targets,targets_len):
         sparse_targets = self._to_sparse(targets)
         predicted_logits = self._compute_logits(mfcc, mfcc_lens, training=False)
-        loss = self._ctc_loss(predicted_logits, mfcc_lens, sparse_targets)
+        loss = self._ctc_loss(predicted_logits, mfcc_lens, sparse_targets,targets_len)
         return loss
 
     def evaluate(self, dataset, dataset_name, args):
@@ -178,8 +187,9 @@ class Network:
 
         progressbar = tqdm(dataset.batches(args.batch_size))
         for idx, batch in enumerate(progressbar):
-            batch_loss = self.evaluate_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"])
-            progressbar.set_description(f"Evaluating! loss: {batch_loss}")
+            batch_loss = self.evaluate_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"], batch["letters_len"])
+            progressbar.set_description(f"Evaluating, loss: {self._metrics['loss'].result():.4f}"
+                                        f"edit distance: {self._metrics['edit_distance'].result():.4f}")
 
         tf.summary.experimental.set_step(self._optimizer.iterations)
         with self._writer.as_default():
@@ -187,7 +197,7 @@ class Network:
                 tf.summary.scalar("{}/{}".format(dataset_name, metric_name), metric.result())
                 #print(f"{metric_name}: {metric.result().numpy()}")
 
-        return self._metrics["loss"].result()
+        return self._metrics["edit_distance"].result()
 
     @tf.function(experimental_relax_shapes=True)
     def predict_batch(self, mfcc, mfcc_lens):
@@ -208,10 +218,10 @@ class Network:
 
         for epoch in range(args.epochs):
             network.train_epoch(timit.train, args)
-            eval_loss = network.evaluate(timit.dev, "dev", args)
+            eval_ed = network.evaluate(timit.dev, "dev", args)
 
-            if eval_loss < self.optimal_loss - self.ES_DELTA:
-                self.optimal_loss = eval_loss
+            if eval_ed < self.optimal_loss - self.ES_DELTA:
+                self.optimal_ed = eval_ed
                 best_weights = self.model.get_weights()
                 curr_patience = 0
             else:
@@ -228,8 +238,8 @@ class Network:
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-    parser.add_argument("--ctc_beam", default=16, type=int, help="CTC beam.")
+    parser.add_argument("--batch-size", default=50, type=int, help="Batch size.")
+    parser.add_argument("--ctc-beam", default=16, type=int, help="CTC beam.")
     parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -245,7 +255,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate-final", default=1e-6, type=float, help="Final learning rate.")
     # Regularization
     parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
-    parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    #parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
     parser.add_argument('--clip-norm', default=2., type=float, help="Value of l2 norm clipping")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
