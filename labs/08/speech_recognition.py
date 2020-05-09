@@ -34,7 +34,7 @@ class Network:
         hidden = self.bidirectional_rnn(hidden, args)
         outputs = tf.keras.layers.TimeDistributed(
             tf.keras.layers.Dense(len(TimitMFCC.LETTERS) + 1,
-                                  activation='softmax',
+                                  activation='linear',
                                   kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
             name="output_softmax")(hidden)
         self.model = tf.keras.Model(inputs=mfcc_signal, outputs=outputs)
@@ -125,7 +125,7 @@ class Network:
 
     # Compute CTC loss using given logits, their lengths, and sparse targets.
     def _ctc_loss(self, logits, logits_len, sparse_targets, targets_len):
-        loss = tf.nn.ctc_loss(sparse_targets, logits, targets_len, logits_len, blank_index=len(TimitMFCC.LETTERS))
+        loss = tf.nn.ctc_loss(sparse_targets, logits, None, logits_len, blank_index=len(TimitMFCC.LETTERS))
         self._metrics["loss"](loss)
         sparse_predictions = self._ctc_predict(logits, logits_len)
         edit_distance = tf.edit_distance(sparse_predictions, sparse_targets, normalize=True)
