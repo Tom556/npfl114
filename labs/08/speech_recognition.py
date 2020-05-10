@@ -42,7 +42,7 @@ class Network:
 
         # The following are just defaults, do not hesitate to modify them.
 
-        self.optimal_loss = np.inf
+        self.optimal_ed = np.inf
         self._clip_global_norm = args.clip_norm
         self._optimizer = self.get_optimizer(args)
         self._loss = tf.losses.SparseCategoricalCrossentropy()
@@ -54,21 +54,21 @@ class Network:
     def timesequence_cnn(self,hidden, args):
         hidden = tf.keras.layers.Reshape((-1, TimitMFCC.MFCC_DIM, 1))(hidden)
 
-        hidden = tf.keras.layers.Conv2D(64, (5, 7), padding='same', activation='relu')(hidden)  # was 32
+        hidden = tf.keras.layers.Conv2D(64, (5, 7), padding='same', activation='relu',
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)  # was 32
 
-        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu',
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
 
-        hidden = tf.keras.layers.MaxPooling2D((1, 3), padding='same')(hidden)
+        hidden = tf.keras.layers.MaxPooling2D((1, 2), padding='same')(hidden)
 
-        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu',
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
 
-        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+        hidden = tf.keras.layers.MaxPooling2D((2, 2), padding='same')(hidden)
 
-        hidden = tf.keras.layers.MaxPooling2D((1, 3), padding='same')(hidden)
-
-        hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu')(hidden)
-
-        hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu')(hidden)
+        hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu',
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
 
         # flattening 2nd and 3rd dimensions
         hidden = tf.keras.layers.Reshape((-1, int(hidden.shape[-1]) * int(hidden.shape[-2])))(hidden)
@@ -81,17 +81,20 @@ class Network:
             if args.rnn_cell == 'LSTM':
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM",
-                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                        dropout=args.dropout, recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             elif args.rnn_cell == 'GRU':
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU",
-                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                        dropout=args.dropout, recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             else:
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU",
-                                              kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
+                                              kernel_regularizer=tf.keras.regularizers.l2(args.l2),
+                                              dropout=args.dropout, recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             # if i != 0:
 
@@ -194,7 +197,10 @@ class Network:
     def train_epoch(self, dataset, args):
         progressbar = tqdm(dataset.batches(args.batch_size))
         for idx, batch in enumerate(progressbar):
-            batch_loss = self.train_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"], batch["letters_len"])
+            batch_loss = self.train_batch(batch["mfcc"],
+                                          tf.cast(tf.math.ceil(batch["mfcc_len"]/2), tf.int32),
+                                          batch["letters"],
+                                          batch["letters_len"])
             progressbar.set_description(f"Training, batch loss: {batch_loss:.4f}, "
                                         f"edit distance: {self._metrics['edit_distance'].result():.4f}")
 
@@ -211,7 +217,10 @@ class Network:
 
         progressbar = tqdm(dataset.batches(args.batch_size))
         for idx, batch in enumerate(progressbar):
-            batch_loss = self.evaluate_batch(batch["mfcc"], batch["mfcc_len"], batch["letters"], batch["letters_len"])
+            batch_loss = self.evaluate_batch(batch["mfcc"],
+                                             tf.cast(tf.math.ceil(batch["mfcc_len"]/2), tf.int32),
+                                             batch["letters"],
+                                             batch["letters_len"])
             progressbar.set_description(f"Evaluating, loss: {self._metrics['loss'].result():.4f}"
                                         f"edit distance: {self._metrics['edit_distance'].result():.4f}")
 
@@ -232,19 +241,20 @@ class Network:
     def predict(self, dataset, args):
         sentences = []
         for batch in tqdm(dataset.batches(args.batch_size), desc="Predicting"):
-            for prediction, prediction_len in zip(*self.predict_batch(batch["mfcc"], batch["mfcc_len"])):
+            for prediction, prediction_len in zip(*self.predict_batch(batch["mfcc"],
+                                                                      tf.cast(tf.math.ceil(batch["mfcc_len"] / 2),tf.int32))):
                 sentences.append(prediction[:prediction_len])
         return sentences
 
-    def training(self, args):
+    def training(self, timit, args):
         curr_patience = 0
         best_weights = None
 
         for epoch in range(args.epochs):
-            network.train_epoch(timit.train, args)
+            self.train_epoch(timit.train, args)
             eval_ed = network.evaluate(timit.dev, "dev", args)
 
-            if eval_ed < self.optimal_loss - self.ES_DELTA:
+            if eval_ed < self.optimal_ed - self.ES_DELTA:
                 self.optimal_ed = eval_ed
                 best_weights = self.model.get_weights()
                 curr_patience = 0
@@ -255,8 +265,15 @@ class Network:
                 self.model.set_weights(best_weights)
                 break
 
+    def predicting(self, dataset, dataset_name, args):
+        out_path = "speech_recognition_{}.txt".format(dataset_name)
+        if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
+        with open(out_path, "w", encoding="utf-8") as out_file:
+            for sentence in self.predict(dataset, args):
+                print(" ".join(timit.LETTERS[letters] for letters in sentence), file=out_file)
+
     def save(self, curr_date, args):
-        self.model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, self.optimal_loss)), include_optimizer=False)
+        self.model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, self.optimal_ed)), include_optimizer=False)
 
 
 if __name__ == "__main__":
@@ -275,11 +292,11 @@ if __name__ == "__main__":
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
-    parser.add_argument("--learning-rate", default=0.1, type=float, help="Initial learning rate.")
+    parser.add_argument("--learning-rate", default=1e-4, type=float, help="Initial learning rate.")
     parser.add_argument("--learning-rate-final", default=1e-6, type=float, help="Final learning rate.")
     # Regularization
     parser.add_argument("--l2", default=0., type=float, help="L2 regularization.")
-    #parser.add_argument("--dropout", default=0.2, type=float, help="Dropout in top layer")
+    parser.add_argument("--dropout", default=0.0, type=float, help="Dropout in top layer")
     parser.add_argument('--clip-norm', default=2., type=float, help="Value of l2 norm clipping")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
@@ -308,13 +325,8 @@ if __name__ == "__main__":
 
     # Create the network and train
     network = Network(args)
-    network.training(args)
+    network.training(timit, args)
     network.save(curr_date, args)
+    network.predicting(timit.dev, "dev", args)
+    network.predicting(timit.test, "test", args)
 
-    # Generate test set annotations, but to allow parallel execution, create it
-    # in in args.logdir if it exists.
-    out_path = "speech_recognition_test.txt"
-    if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
-    with open(out_path, "w", encoding="utf-8") as out_file:
-        for sentence in network.predict(timit.test, args):
-            print(" ".join(timit.LETTERS[letters] for letters in sentence), file=out_file)
