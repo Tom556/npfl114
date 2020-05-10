@@ -26,10 +26,11 @@ class Network:
         # Store the results in `self.model`.
 
         mfcc_signal = tf.keras.layers.Input([None, TimitMFCC.MFCC_DIM])
+        hidden = self.timesequence_cnn(mfcc_signal, args)
         hidden = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(args.rnn_cell_dim,
                                                                        activation='relu',
                                                                        kernel_regularizer=tf.keras.regularizers.l2(args.l2)),
-                                                 name="input_dense")(mfcc_signal)
+                                                 name="input_dense")(hidden)
         hidden = tf.keras.layers.LayerNormalization()(hidden)
         hidden = self.bidirectional_rnn(hidden, args)
         outputs = tf.keras.layers.TimeDistributed(
@@ -49,6 +50,30 @@ class Network:
         self._writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
 
         #self.model.compile()
+
+    def timesequence_cnn(self,hidden, args):
+        hidden = tf.keras.layers.Reshape((-1, TimitMFCC.MFCC_DIM, 1))(hidden)
+
+        hidden = tf.keras.layers.Conv2D(64, (5, 7), padding='same', activation='relu')(hidden)  # was 32
+
+        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+
+        hidden = tf.keras.layers.MaxPooling2D((1, 3), padding='same')(hidden)
+
+        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+
+        hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu')(hidden)
+
+        hidden = tf.keras.layers.MaxPooling2D((1, 3), padding='same')(hidden)
+
+        hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu')(hidden)
+
+        hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu')(hidden)
+
+        # flattening 2nd and 3rd dimensions
+        hidden = tf.keras.layers.Reshape((-1, int(hidden.shape[-1]) * int(hidden.shape[-2])))(hidden)
+
+        return hidden
 
     def bidirectional_rnn(self, hidden, args):
         for i in range(args.num_layers):
@@ -155,9 +180,8 @@ class Network:
         gradients = tape.gradient(loss, self.model.trainable_variables)
 
         if self._clip_global_norm:
-            gradients, global_norm = tf.clip_by_global_norm(gradients, self._clip_global_norm, name="gradient_clip_norm")
-        else:
-            global_norm = tf.linalg.global_norm(gradients)
+            gradients= [tf.clip_by_norm(gradient, self._clip_global_norm, name="gradient_clip_norm") for gradient in gradients]
+        global_norm = tf.linalg.global_norm(gradients)
         self._optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
         tf.summary.experimental.set_step(self._optimizer.iterations)
