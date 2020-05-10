@@ -251,6 +251,7 @@ class Network:
         best_weights = None
 
         for epoch in range(args.epochs):
+            print(f"Epoch id: {epoch}")
             self.train_epoch(timit.train, args)
             eval_ed = network.evaluate(timit.dev, "dev", args)
 
