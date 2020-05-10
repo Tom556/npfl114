@@ -18,19 +18,36 @@ class Network:
             # TODO(lemmatizer_noattn): Define
             # - `source_embedding` as a masked embedding layer of source chars into args.cle_dim dimensions
 
+            self.source_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=True,
+                                                              name='encoder_embedding')
+
             # TODO: Define
             # - `source_rnn` as a bidirectional GRU with args.rnn_dim units, returning _whole sequences_,
             #   summing opposite directions
+
+            self.source_rnn = tf.keras.layers.Bidirectional(
+                tf.keras.layers.GRU(args.rnn_dim, return_sequences=True), merge_mode='sum', name='encoder_rnn')
 
             # TODO(lemmatizer_noattn): Define
             # - `target_embedding` as an unmasked embedding layer of target chars into args.cle_dim dimensions
             # - `target_rnn_cell` as a GRUCell with args.rnn_dim units
             # - `target_output_layer` as a Dense layer into `num_target_chars`
 
+            self.target_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=False,
+                                                              name='target_embedding')
+
+            self.target_rnn_cell = tf.keras.layers.GRUCell(args.rnn_dim)
+
+            self.target_output_layer = tf.keras.layers.Dense(num_target_chars, name='target_output')
+
             # TODO: Define
             # - `attention_source_layer` as a Dense layer with args.rnn_dim outputs
             # - `attention_state_layer` as a Dense layer with args.rnn_dim outputs
             # - `attention_weight_layer` as a Dense layer with 1 output
+
+            self.attention_source_layer = tf.keras.layers.Dense(args.rnn_dim)
+            self.attention_state_layer = tf.keras.layers.Dense(args.rnn_dim)
+            self.attention_weight_layer = tf.keras.layers.Dense(1)
 
         class DecoderTraining(tfa.seq2seq.BaseDecoder):
             def __init__(self, lemmatizer, *args, **kwargs):
@@ -40,16 +57,17 @@ class Network:
             @property
             def batch_size(self):
                  # TODO(lemmatizer_noattn): Return the batch size of self.source_states, using tf.shape
-                raise NotImplementedError()
+                return tf.shape(self.source_states)[0]
+
             @property
             def output_size(self):
                  # TODO(lemmatizer_noattn): Return `tf.TensorShape(number of logits per each output element)`
                  # By output element we mean characters.
-                raise NotImplementedError()
+                return tf.TensorShape([self.lemmatizer.num_logits])
             @property
             def output_dtype(self):
                  # TODO(lemmatizer_noattn): Return the type of the logits
-                raise NotImplementedError()
+                return tf.float32
 
             def with_attention(self, inputs, states):
                 # TODO: Compute the attention.
@@ -65,7 +83,8 @@ class Network:
                 #   representation for every batch element, independently on how many characters had
                 #   the corresponding input forms.
                 # - Finally concatenate `inputs` and `attention` (in this order) and return the result.
-                raise NotImplementedError()
+
+                self.lemmatizer.attention_source_layer(self.source_states)
 
             def initialize(self, layer_inputs, initial_state=None, mask=None):
                 self.source_states, self.targets = layer_inputs
@@ -77,6 +96,11 @@ class Network:
                 #   in `source_states`. The idea is that it is most relevant for generating
                 #   the first letter and contains all following characters via the backward RNN.
                 # TODO: Pass `inputs` through `self._with_attention(inputs, states)`.
+
+
+                finished = tf.fill([self.batch_size], False)
+                inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
+                states = self.source_states
                 return finished, inputs, states
 
             def step(self, time, inputs, states, training):
