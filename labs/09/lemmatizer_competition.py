@@ -7,34 +7,251 @@ import re
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
+from tqdm import tqdm
 
 from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
 class Network:
-    def __init__(self, pdt, args):
-        # TODO: Define a suitable model.
+    class Lemmatizer(tf.keras.Model):
+        def __init__(self, args, num_source_chars, num_target_chars):
+            super().__init__()
+            self.source_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=True,
+                                                              name='encoder_embedding')
 
-    def train(self, pdt, args):
-        # TODO: Train the network on a given dataset.
-        raise NotImplementedError()
+            self.source_rnn = tf.keras.layers.Bidirectional(
+                tf.keras.layers.LSTM(args.rnn_dim, return_sequences=True), merge_mode='sum', name='encoder_rnn')
+
+            self.target_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=False,
+                                                              name='target_embedding')
+
+            self.target_rnn_cell = tf.keras.layers.GRUCell(args.rnn_dim)
+
+            self.target_output_layer = tf.keras.layers.Dense(num_target_chars, name='target_output')
+
+            self.attention_source_layer = tf.keras.layers.Dense(args.rnn_dim)
+            self.attention_state_layer = tf.keras.layers.Dense(args.rnn_dim)
+            self.attention_weight_layer = tf.keras.layers.Dense(1)
+
+            self.num_logits = num_target_chars
+
+        class DecoderTraining(tfa.seq2seq.BaseDecoder):
+            def __init__(self, lemmatizer, *args, **kwargs):
+                self.lemmatizer = lemmatizer
+                super().__init__.__wrapped__(self, *args, **kwargs)
+
+            @property
+            def batch_size(self):
+                return tf.shape(self.source_states)[0]
+
+            @property
+            def output_size(self):
+                return tf.TensorShape([self.lemmatizer.num_logits])
+            @property
+            def output_dtype(self):
+                return tf.float32
+
+            def _with_attention(self, inputs, states):
+
+                query_attentions = tf.expand_dims(self.lemmatizer.attention_state_layer(states), 1)
+                weight_attention = self.lemmatizer.attention_weight_layer(
+                    tf.keras.activations.tanh(self.key_attention + query_attentions))
+
+                weight_attention = tf.keras.activations.softmax(weight_attention, axis=1)
+                attention = tf.reduce_sum(weight_attention * self.source_states, axis=1)
+                return tf.keras.layers.Concatenate(axis=-1)([inputs, attention])
+
+            def initialize(self, layer_inputs, initial_state=None, mask=None):
+                self.source_states, self.targets = layer_inputs
+
+                finished = tf.fill([self.batch_size], False)
+                inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
+                states = self.source_states[:,0,:]
+
+                self.key_attention = self.lemmatizer.attention_source_layer(self.source_states)
+                inputs = self._with_attention(inputs, states)
+                return finished, inputs, states
+
+            def step(self, time, inputs, states, training):
+                outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states], training)
+                outputs = self.lemmatizer.target_output_layer(outputs)
+                next_inputs = self.lemmatizer.target_embedding(self.targets[:,time])
+                finished = (self.targets[:,time] == MorphoDataset.Factor.EOW)
+
+                next_inputs = self._with_attention(next_inputs, states)
+
+                return outputs, states, next_inputs, finished
+
+        class DecoderPrediction(DecoderTraining):
+            @property
+            def output_size(self):
+                 return tf.TensorShape([])
+            @property
+            def output_dtype(self):
+                 return tf.int32
+
+            def initialize(self, layer_inputs, initial_state=None, mask=None):
+                self.source_states = layer_inputs
+                finished = tf.fill([self.batch_size], False)
+                inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
+                states = self.source_states[:,0,:]
+
+                self.key_attention = self.lemmatizer.attention_source_layer(self.source_states)
+                inputs = self._with_attention(inputs, states)
+                return finished, inputs, states
+
+            def step(self, time, inputs, states, training):
+
+                outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states], training)
+                outputs = self.lemmatizer.target_output_layer(outputs)
+                outputs = tf.argmax(outputs, axis=1, output_type=tf.int32)
+                next_inputs = self.lemmatizer.target_embedding(outputs)
+                finished = (outputs == MorphoDataset.Factor.EOW)
+
+                next_inputs = self._with_attention(next_inputs, states)
+
+                return outputs, states, next_inputs, finished
+
+        def call(self, inputs):
+            if isinstance(inputs, list) and len(inputs) == 2:
+                source_charseqs, target_charseqs = inputs
+            else:
+                source_charseqs, target_charseqs = inputs, None
+            source_charseqs_shape = tf.shape(source_charseqs)
+
+            valid_words = tf.cast(tf.where(source_charseqs[:, :, 0] != 0), tf.int32)
+            source_charseqs = tf.gather_nd(source_charseqs, valid_words)
+            if target_charseqs is not None:
+                target_charseqs = tf.gather_nd(target_charseqs, valid_words)
+
+            source = self.source_embedding(source_charseqs)
+            source_states = self.source_rnn(source)
+            # Run the appropriate decoder
+            if target_charseqs is not None:
+                decoder_training = self.DecoderTraining(self)
+                output_layer, _, output_lens = decoder_training([source_states, target_charseqs])
+            else:
+
+                decoder_predict = self.DecoderPrediction(self, maximum_iterations=(tf.shape(source_charseqs)[1]+10))
+                output_layer, _ , output_lens = decoder_predict(source_states)
+
+            output_layer = tf.scatter_nd(valid_words, output_layer, tf.concat([source_charseqs_shape[:2], tf.shape(output_layer)[1:]], axis=0))
+            output_layer._keras_mask = tf.sequence_mask(tf.scatter_nd(valid_words, output_lens, source_charseqs_shape[:2]))
+            return output_layer
+
+    def __init__(self, args, num_source_chars, num_target_chars):
+        self.lemmatizer = self.Lemmatizer(args, num_source_chars, num_target_chars)
+
+        self.lemmatizer.compile(
+            optimizer=tf.optimizers.Adam(),
+            loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
+            metrics=[tf.metrics.SparseCategoricalAccuracy(name="character_accuracy")],
+        )
+        self.writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
+
+    def append_eow(self, sequences):
+        """Append EOW character after end of every given sequence."""
+        padded_sequences = np.pad(sequences, [[0, 0], [0, 0], [0, 1]])
+        ends = np.logical_xor(padded_sequences != 0, np.pad(sequences, [[0, 0], [0, 0], [1, 0]], constant_values=1) != 0)
+        padded_sequences[ends] = MorphoDataset.Factor.EOW
+        return padded_sequences
+
+    def train_epoch(self, dataset, args):
+        for batch in dataset.batches(args.batch_size):
+
+            targets = self.append_eow(batch[dataset.LEMMAS].charseqs)
+
+            metrics = self.lemmatizer.train_on_batch([batch[dataset.FORMS].charseqs, targets], targets)
+
+            # Generate the summaries each 10 steps
+            iteration = int(self.lemmatizer.optimizer.iterations)
+            if iteration % 100 == 0:
+                tf.summary.experimental.set_step(iteration)
+                metrics = dict(zip(self.lemmatizer.metrics_names, metrics))
+
+                predictions = self.predict_batch(batch[dataset.FORMS].charseqs[:1]).numpy()
+                form = "".join(dataset.data[dataset.FORMS].alphabet[i] for i in batch[dataset.FORMS].charseqs[0, 0] if i)
+                gold_lemma = "".join(dataset.data[dataset.LEMMAS].alphabet[i] for i in targets[0, 0] if i)
+                system_lemma = "".join(dataset.data[dataset.LEMMAS].alphabet[i] for i in predictions[0, 0] if i != MorphoDataset.Factor.EOW)
+                status = ", ".join([*["{}={:.4f}".format(name, value) for name, value in metrics.items()],
+                                    "{} {} {}".format(form, gold_lemma, system_lemma)])
+                print("Step {}:".format(iteration), status)
+
+                with self.writer.as_default():
+                    for name, value in metrics.items():
+                        tf.summary.scalar("train/{}".format(name), value)
+                    tf.summary.text("train/prediction", status)
+
+    @tf.function(experimental_relax_shapes=True)
+    def predict_batch(self, charseqs):
+        return self.lemmatizer(charseqs)
+
+    def evaluate(self, dataset, dataset_name, args):
+        correct_lemmas, total_lemmas = 0, 0
+        for batch in dataset.batches(args.batch_size):
+            predictions = self.predict_batch(batch[dataset.FORMS].charseqs).numpy()
+
+            # Compute whole lemma accuracy
+            targets = self.append_eow(batch[dataset.LEMMAS].charseqs)
+            resized_predictions = np.concatenate([predictions, np.zeros_like(targets)], axis=2)[:, :, :targets.shape[2]]
+            valid_lemmas = targets[:, :, 0] != MorphoDataset.Factor.EOW
+
+            total_lemmas += np.sum(valid_lemmas)
+            correct_lemmas += np.sum(valid_lemmas * np.all(targets == resized_predictions * (targets != 0), axis=2))
+
+        metrics = {"lemma_accuracy": correct_lemmas / total_lemmas}
+        with self.writer.as_default():
+            tf.summary.experimental.set_step(self.lemmatizer.optimizer.iterations)
+            for name, value in metrics.items():
+                tf.summary.scalar("{}/{}".format(dataset_name, name), value)
+
+        return metrics
 
     def predict(self, dataset, args):
-        # TODO: The `predict` method should return a list, each element corresponding
-        # to one sentence. Each sentence should be list/np.ndarray of words,
-        # each word a list/np.ndarray of chosen characters, possibly ended
-        # by MorphoDataset.Factor.EOW.
-        raise NotImplementedError()
+        predictions = []
+        for i, batch in enumerate(tqdm(dataset.batches(args.batch_size), desc="Predicting!")):
+            batch_prediction = self.predict_batch(batch[dataset.FORMS].charseqs).numpy()
+            predictions += list(batch_prediction)
+
+        return (predictions)
+
+    def training(self, morpho, args):
+        for epoch in range(args.epochs):
+            self.train_epoch(morpho.train, args)
+            metrics = self.evaluate(morpho.dev, "dev", args)
+            print("Evaluation on {}, epoch {}: {}".format("dev", epoch + 1, metrics))
+
+    def predicting(self, dataset, dataset_name, args):
+        # Generate test set annotations, but to allow parallel execution, create it
+        # in in args.logdir if it exists.
+        out_path = "lemmatizer_competition_{}.txt".format(dataset_name)
+        if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
+        with open(out_path, "w", encoding="utf-8") as out_file:
+            for i, sentence in enumerate(self.predict(dataset, args)):
+                for j in range(len(morpho.test.data[morpho.test.FORMS].word_strings[i])):
+                    lemma = []
+                    for c in map(int, sentence[j]):
+                        if c == MorphoDataset.Factor.EOW: break
+                        lemma.append(morpho.test.data[morpho.test.LEMMAS].alphabet[c])
+
+                    print(morpho.test.data[morpho.test.FORMS].word_strings[i][j],
+                          "".join(lemma),
+                          morpho.test.data[morpho.test.TAGS].word_strings[i][j],
+                          sep="\t", file=out_file)
+                print(file=out_file)
 
 
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
-    # TODO: Define reasonable defaults and optionally more parameters
-    parser.add_argument("--batch_size", default=None, type=int, help="Batch size.")
-    parser.add_argument("--epochs", default=None, type=int, help="Number of epochs.")
+    parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
+    parser.add_argument("--cle_dim", default=64, type=int, help="CLE embedding dimension.")
+    parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
+    parser.add_argument("--max_sentences", default=5000, type=int, help="Maximum number of sentences to load.")
+    parser.add_argument("--rnn_dim", default=64, type=int, help="RNN cell dimension.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
 
@@ -60,23 +277,9 @@ if __name__ == "__main__":
     analyses = MorphoAnalyzer("czech_pdt_analyses")
 
     # Create the network and train
-    network = Network(morpho, args)
-    network.train(morpho, args)
+    network = Network(args,
+                      num_source_chars=len(morpho.train.data[morpho.train.FORMS].alphabet),
+                      num_target_chars=len(morpho.train.data[morpho.train.LEMMAS].alphabet))
+    network.training(morpho, args)
+    network.predicting(morpho.train, 'train', args)
 
-    # Generate test set annotations, but to allow parallel execution, create it
-    # in in args.logdir if it exists.
-    out_path = "lemmatizer_competition_test.txt"
-    if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
-    with open(out_path, "w", encoding="utf-8") as out_file:
-        for i, sentence in enumerate(network.predict(morpho.test, args)):
-            for j in range(len(morpho.test.data[morpho.test.FORMS].word_strings[i])):
-                lemma = []
-                for c in map(int, sentence[j]):
-                    if c == MorphoDataset.Factor.EOW: break
-                    lemma.append(morpho.test.data[morpho.test.LEMMAS].alphabet[c])
-
-                print(morpho.test.data[morpho.test.FORMS].word_strings[i][j],
-                      "".join(lemma),
-                      morpho.test.data[morpho.test.TAGS].word_strings[i][j],
-                      sep="\t", file=out_file)
-            print(file=out_file)
