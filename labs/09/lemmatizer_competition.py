@@ -175,11 +175,11 @@ class Network:
 
         optimizer = None
         if args.optimizer == 'SGD':
-            optimizer = tf.optimizers.SGD(learning_rate=self.learning_rate_schedule, momentum=args.momentum)
+            optimizer = tf.optimizers.SGD(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clipnorm)
         elif args.optimizer == "RMSProp":
-            optimizer = tf.optimizers.RMSprop(learning_rate=self.learning_rate_schedule, momentum=args.momentum)
+            optimizer = tf.optimizers.RMSprop(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clipnorm)
         elif args.optimizer == 'Adam':
-            optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule)
+            optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule, clipnorm=args.clipnorm)
 
         return optimizer
 
@@ -256,7 +256,7 @@ class Network:
             print("Evaluation on {}, epoch {}: {}".format("dev", epoch + 1, metrics))
 
             eval_metric = metrics["lemma_accuracy"]
-            if eval_metric < self._optimal_metric - self.ES_DELTA:
+            if eval_metric > self.optimal_metric + self.ES_DELTA:
                 self.optimal_metric = eval_metric
                 best_weights = self.lemmatizer.get_weights()
                 curr_patience = 0
@@ -300,18 +300,23 @@ if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-    parser.add_argument("--cle_dim", default=64, type=int, help="CLE embedding dimension.")
     parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
-    parser.add_argument("--max_sentences", default=5000, type=int, help="Maximum number of sentences to load.")
-    parser.add_argument("--rnn_dim", default=64, type=int, help="RNN cell dimension.")
+    parser.add_argument("--max-sentences", default=5000, type=int, help="Maximum number of sentences to load.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+    # Network architecture
+    parser.add_argument("--cle-dim", default=64, type=int, help="CLE embedding dimension.")
+    parser.add_argument("--rnn-dim", default=64, type=int, help="RNN cell dimension.")
+    parser.add_argument("--num-layers", default=1, type=int, help="Number of layers in RNN.")
     # Optimizer parameters
     parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
     parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
     parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
     parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
     parser.add_argument("--learning-rate-final", default=1e-8, type=float, help="Final learning rate.")
+    # Reguralization
+    parser.add_argument("--clip-norm", default=5., type=float, help="Gradient norm clipping value.")
+    #parser.add_argument("--dropout", default=0., type=float, help="Dropout in the network.")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
