@@ -13,6 +13,11 @@ from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
 class Network:
+
+    ES_DELTA = 1e-4
+    ES_PATIENCE = 5
+    OP_PATIENCE = 1
+    OP_REDUCE_LR = 0.1
     class Lemmatizer(tf.keras.Model):
         def __init__(self, args, num_source_chars, num_target_chars):
             super().__init__()
@@ -104,7 +109,7 @@ class Network:
 
                 outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states], training)
                 outputs = self.lemmatizer.target_output_layer(outputs)
-                outputs = tf.argmax(outputs, axis=1, output_type=tf.int32)
+                outputs = tf.argmax(outputs, axis=-1, output_type=tf.int32)
                 next_inputs = self.lemmatizer.target_embedding(outputs)
                 finished = (outputs == MorphoDataset.Factor.EOW)
 
@@ -142,12 +147,41 @@ class Network:
     def __init__(self, args, num_source_chars, num_target_chars):
         self.lemmatizer = self.Lemmatizer(args, num_source_chars, num_target_chars)
 
+        self._optimizer = self.get_optimizer(args)
+        self.optimal_metric = 0.
+
         self.lemmatizer.compile(
-            optimizer=tf.optimizers.Adam(),
+            optimizer=self._optimizer,
             loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[tf.metrics.SparseCategoricalAccuracy(name="character_accuracy")],
+            metrics=[tf.metrics.SparseCategoricalAccuracy(name="character_accuracy")]
         )
         self.writer = tf.summary.create_file_writer(args.logdir, flush_millis=10 * 1000)
+
+    def get_optimizer(self, args):
+        learning_rate_final = args.learning_rate_final
+        decay_steps = int(90828 * args.epochs / args.batch_size)
+        if args.decay == 'polynomial':
+            self.learning_rate_schedule = tf.optimizers.schedules.PolynomialDecay(args.learning_rate,
+                                                                             decay_steps=decay_steps,
+                                                                             end_learning_rate=args.learning_rate_final)
+        elif args.decay == 'exponential':
+            decay_rate = learning_rate_final / args.learning_rate
+            self.learning_rate_schedule = tf.optimizers.schedules.ExponentialDecay(args.learning_rate,
+                                                                              decay_steps=decay_steps,
+                                                                              decay_rate=decay_rate, staircase=False)
+
+        else:
+            self.learning_rate_schedule = args.learning_rate
+
+        optimizer = None
+        if args.optimizer == 'SGD':
+            optimizer = tf.optimizers.SGD(learning_rate=self.learning_rate_schedule, momentum=args.momentum)
+        elif args.optimizer == "RMSProp":
+            optimizer = tf.optimizers.RMSprop(learning_rate=self.learning_rate_schedule, momentum=args.momentum)
+        elif args.optimizer == 'Adam':
+            optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule)
+
+        return optimizer
 
     def append_eow(self, sequences):
         """Append EOW character after end of every given sequence."""
@@ -208,18 +242,35 @@ class Network:
         return metrics
 
     def predict(self, dataset, args):
-        predictions = []
         for i, batch in enumerate(tqdm(dataset.batches(args.batch_size), desc="Predicting!")):
-            batch_prediction = self.predict_batch(batch[dataset.FORMS].charseqs).numpy()
-            predictions += list(batch_prediction)
-
-        return (predictions)
+            batch_predictions = self.predict_batch(batch[dataset.FORMS].charseqs).numpy()
+            for prediction in batch_predictions:
+                yield prediction
 
     def training(self, morpho, args):
+        curr_patience = 0
+        best_weights = None
         for epoch in range(args.epochs):
             self.train_epoch(morpho.train, args)
             metrics = self.evaluate(morpho.dev, "dev", args)
             print("Evaluation on {}, epoch {}: {}".format("dev", epoch + 1, metrics))
+
+            eval_metric = metrics["lemma_accuracy"]
+            if eval_metric < self._optimal_metric - self.ES_DELTA:
+                self.optimal_metric = eval_metric
+                best_weights = self.lemmatizer.get_weights()
+                curr_patience = 0
+            else:
+                curr_patience += 1
+
+            if curr_patience > 0 and args.decay == 'onplateau':
+                self.learning_rate_schedule *= self.OP_REDUCE_LR
+                self._optimizer.learning_rate.assign(self.learning_rate_schedule)
+                # reset_variables = [np.zeros_like(var.numpy()) for var in self._optimizer.variables()]
+                # self._optimizer.set_weights(reset_variables)
+            if curr_patience > self.ES_PATIENCE:
+                self.lemmatizer.set_weights(best_weights)
+                break
 
     def predicting(self, dataset, dataset_name, args):
         # Generate test set annotations, but to allow parallel execution, create it
@@ -240,6 +291,10 @@ class Network:
                           sep="\t", file=out_file)
                 print(file=out_file)
 
+    def save(self, curr_date, args):
+        self.lemmatizer.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, self.optimal_metric)),
+                             include_optimizer=False)
+
 
 if __name__ == "__main__":
     # Parse arguments
@@ -251,6 +306,12 @@ if __name__ == "__main__":
     parser.add_argument("--rnn_dim", default=64, type=int, help="RNN cell dimension.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+    # Optimizer parameters
+    parser.add_argument("--optimizer", default='Adam', type=str, help="NN optimizer")
+    parser.add_argument("--momentum", default=0., type=float, help="Momentum of gradient schedule.")
+    parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
+    parser.add_argument("--learning-rate", default=0.01, type=float, help="Initial learning rate.")
+    parser.add_argument("--learning-rate-final", default=1e-8, type=float, help="Final learning rate.")
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
     args = parser.parse_args([] if "__file__" not in globals() else None)
@@ -265,10 +326,12 @@ if __name__ == "__main__":
     if not args.verbose:
         os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+
     # Create logdir name
+    curr_date = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     args.logdir = os.path.join("logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
-        datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        curr_date,
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))
     ))
 
@@ -281,5 +344,7 @@ if __name__ == "__main__":
                       num_source_chars=len(morpho.train.data[morpho.train.FORMS].alphabet),
                       num_target_chars=len(morpho.train.data[morpho.train.LEMMAS].alphabet))
     network.training(morpho, args)
-    network.predicting(morpho.train, 'train', args)
+    network.predicting(morpho.dev, 'dev', args)
+    network.predicting(morpho.test, 'test', args)
+    network.save(curr_date, args)
 
