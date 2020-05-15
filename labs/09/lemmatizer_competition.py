@@ -175,11 +175,11 @@ class Network:
 
         optimizer = None
         if args.optimizer == 'SGD':
-            optimizer = tf.optimizers.SGD(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clipnorm)
+            optimizer = tf.optimizers.SGD(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
         elif args.optimizer == "RMSProp":
-            optimizer = tf.optimizers.RMSprop(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clipnorm)
+            optimizer = tf.optimizers.RMSprop(learning_rate=self.learning_rate_schedule, momentum=args.momentum, clipnorm=args.clip_norm)
         elif args.optimizer == 'Adam':
-            optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule, clipnorm=args.clipnorm)
+            optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule, clipnorm=args.clip_norm)
 
         return optimizer
 
