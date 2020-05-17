@@ -26,6 +26,23 @@ class Network:
         # - applies transposed convolution with 1 filters, kernel size 5,
         #   stride 2, same padding, and sigmoid activation
 
+        generator_input = tf.keras.layers.Input([args.z_dim])
+        generator_hidden = tf.keras.layers.Dense(1024, use_bias=False)(generator_input)
+        generator_hidden = tf.keras.layers.BatchNormalization()(generator_hidden)
+        generator_hidden = tf.keras.layers.ReLU()(generator_hidden)
+        generator_hidden = tf.keras.layers.Dense((MNIST.H // 4) * (MNIST.W // 4) * 64, use_bias=False)(generator_hidden)
+        generator_hidden = tf.keras.layers.BatchNormalization()(generator_hidden)
+        generator_hidden = tf.keras.layers.ReLU()(generator_hidden)
+        generator_hidden = tf.keras.layers.Reshape([MNIST.H // 4, MNIST.W // 4, 64])(generator_hidden)
+        generator_hidden = tf.keras.layers.Conv2DTranspose(32, kernel_size=5, strides=2, padding='same',
+                                                           use_bias=False)(generator_hidden)
+        generator_hidden = tf.keras.layers.BatchNormalization()(generator_hidden)
+        generator_hidden = tf.keras.layers.ReLU()(generator_hidden)
+        generator_output = tf.keras.layers.Conv2DTranspose(1, kernel_size=5, strides=2, padding='same',
+                                                           activation='sigmoid')(generator_hidden)
+
+        self.generator = tf.keras.models.Model(inputs=generator_input, outputs=generator_output)
+
         # TODO: Define `self.discriminator` as a Model, which
         # - takes input images with shape [MNIST.H, MNIST.W, MNIST.C]
         # - computes batch normalized convolution with 32 filters, kernel size 5,
@@ -37,6 +54,23 @@ class Network:
         # - flattens the current representation
         # - applies batch normalized dense layer with 1024 uints and ReLU activation (`use_bias`)
         # - applies output dense layer with one output and a suitable activation function
+
+        discriminator_input = tf.keras.layers.Input([MNIST.H, MNIST.W, MNIST.C])
+        discriminator_hidden = tf.keras.layers.Conv2D(32, kernel_size=5, padding='same', use_bias=False)(discriminator_input)
+        discriminator_hidden = tf.keras.layers.BatchNormalization()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.ReLU()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.MaxPool2D(pool_size=2, strides=2)(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.Conv2D(64, kernel_size=5, padding='same', use_bias=False)(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.BatchNormalization()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.ReLU()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.MaxPool2D(pool_size=2, strides=2)(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.Flatten()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.Dense(1024, use_bias=False)(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.BatchNormalization()(discriminator_hidden)
+        discriminator_hidden = tf.keras.layers.ReLU()(discriminator_hidden)
+        discriminator_output = tf.keras.layers.Dense(1, activation='sigmoid')(discriminator_hidden)
+
+        self.discriminator = tf.keras.models.Model(inputs=discriminator_input, outputs=discriminator_output)
 
         self._generator_optimizer, self._discriminator_optimizer = tf.optimizers.Adam(), tf.optimizers.Adam()
         self._loss_fn = tf.losses.BinaryCrossentropy()
@@ -56,6 +90,14 @@ class Network:
         # - compute loss using `_loss_fn`, with target labels `tf.ones_like(discriminator_output)`
         # Then, compute the gradients with respect to generator trainable variables and update
         # generator trainable weights using self._generator_optimizer.
+        smpl_z = self._sample_z(images.shape[0])
+        with tf.GradientTape() as tape:
+            smpl_images = self.generator(smpl_z, training=True)
+            discriminated_smpl = self.discriminator(smpl_images, training=True)
+            generator_loss = self._loss_fn(tf.ones_like(discriminated_smpl),discriminated_smpl)
+
+        generator_gradients = tape.gradient(generator_loss, self.generator.trainable_variables)
+        self._generator_optimizer.apply_gradients(zip(generator_gradients, self.generator.trainable_variables))
 
         # TODO(gan): Discriminator training. Using a Gradient tape:
         # - discriminate `images` with `training=True`, storing
@@ -67,6 +109,17 @@ class Network:
         #   - `_loss_fn` on discriminated_fake with suitable targets.
         # Then, compute the gradients with respect to discriminator trainable variables and update
         # discriminator trainable weights using self._discriminator_optimizer.
+
+        with tf.GradientTape() as tape:
+            discriminated_real = self.discriminator(images, training=True)
+            #fake_images = self.generator(smpl_z, training=True)
+            fake_images= smpl_images
+            discriminated_fake = self.discriminator(fake_images, training=True)
+            discriminator_loss = self._loss_fn(tf.ones_like(discriminated_real),discriminated_real) + self._loss_fn(tf.zeros_like(discriminated_fake),discriminated_fake)
+
+        discriminator_gradients = tape.gradient(discriminator_loss, self.discriminator.trainable_variables)
+        self._discriminator_optimizer.apply_gradients(zip(discriminator_gradients,
+                                                          self.discriminator.trainable_variables))
 
         if self._discriminator_optimizer.iterations % 100 == 0:
             tf.summary.experimental.set_step(self._discriminator_optimizer.iterations)
