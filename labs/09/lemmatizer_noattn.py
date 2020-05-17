@@ -144,7 +144,7 @@ class Network:
             # Run the appropriate decoder
             if target_charseqs is not None:
                 # TODO: Create a self.DecoderTraining by passing `self` to its constructor.
-                # Then run it on `source_states` and `target_charseqs` inputs,
+                # Then run it on `[source_states, target_charseqs]` input,
                 # storing the first result in `output_layer` and the third result in `output_lens`.
                 decoder_training = self.DecoderTraining(self)
                 output_layer, _, output_lens = decoder_training([source_states, target_charseqs])

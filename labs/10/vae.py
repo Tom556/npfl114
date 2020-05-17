@@ -51,9 +51,9 @@ class Network:
 
             # TODO: Sample `z` from a Normal distribution with mean `z_mean` and
             # standard deviation `exp(z_log_variance / 2)`. Use reparametrization trick,
-            # so sample `epsilon` from N(0, 1) using 
+            # so sample `epsilon` from N(0, 1) using
             #   `tf.random.normal(z_mean.shape, seed=self._seed)`
-            # and then alter mean and variance to the required values.
+            # and then multiply it by the standard deviation and add the mean.
 
             # TODO: Decode images using `z`.
 
@@ -110,11 +110,6 @@ class Network:
 
 
 if __name__ == "__main__":
-    import argparse
-    import datetime
-    import os
-    import re
-
     # Parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
