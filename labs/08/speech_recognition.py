@@ -56,19 +56,23 @@ class Network:
 
         hidden = tf.keras.layers.Conv2D(64, (5, 7), padding='same', activation='relu',
                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)  # was 32
+        hidden = tf.keras.layers.BatchNormalization()(hidden)
 
         hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu',
                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
+        hidden = tf.keras.layers.BatchNormalization()(hidden)
 
         hidden = tf.keras.layers.MaxPooling2D((1, 2), padding='same')(hidden)
 
         hidden = tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu',
                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
+        hidden = tf.keras.layers.BatchNormalization()(hidden)
 
         hidden = tf.keras.layers.MaxPooling2D((2, 2), padding='same')(hidden)
 
         hidden = tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu',
                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2))(hidden)
+        hidden = tf.keras.layers.BatchNormalization()(hidden)
 
         # flattening 2nd and 3rd dimensions
         hidden = tf.keras.layers.Reshape((-1, int(hidden.shape[-1]) * int(hidden.shape[-2])))(hidden)
@@ -78,23 +82,24 @@ class Network:
     def bidirectional_rnn(self, hidden, args):
         for i in range(args.num_layers):
             residual = hidden
+            hidden = tf.keras.layers.Dropout(args.dropout)(hidden)
             if args.rnn_cell == 'LSTM':
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.LSTM(args.rnn_cell_dim, return_sequences=True, name="LSTM",
                                          kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                        dropout=args.dropout, recurrent_dropout=args.dropout),
+                                        dropout=0., recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             elif args.rnn_cell == 'GRU':
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.GRU(args.rnn_cell_dim, return_sequences=True, name="GRU",
                                         kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                        dropout=args.dropout, recurrent_dropout=args.dropout),
+                                        dropout=0., recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             else:
                 hidden = tf.keras.layers.Bidirectional(
                     tf.keras.layers.SimpleRNN(args.rnn_cell_dim, return_sequences=True, name="GRU",
                                               kernel_regularizer=tf.keras.regularizers.l2(args.l2),
-                                              dropout=args.dropout, recurrent_dropout=args.dropout),
+                                              dropout=0., recurrent_dropout=args.dropout),
                     merge_mode='sum')(hidden)
             # if i != 0:
 
@@ -276,6 +281,51 @@ class Network:
     def save(self, curr_date, args):
         self.model.save(os.path.join(args.logdir, "{}-{:.4f}-model.h5".format(curr_date, self.optimal_ed)), include_optimizer=False)
 
+class NetworkEnsemble():
+
+    def __init__(self, cags, args):
+        self.ensemble_dir = args.ensemble_dir
+
+        self.dev_labels = tf.constant([lab.numpy() for lab in cags.dev.map(CAGS.parse).map(lambda x: x["label"])], tf.float32)
+        # print(type(self.dev_labels[0]))
+        dev_len = len(self.dev_labels)
+        self.dev_res = np.zeros((dev_len, len(CAGS.LABELS)), np.float32)
+
+        test_len = sum(1 for _ in cags.test.map(CAGS.parse))
+        self.test_res = np.zeros((test_len, len(CAGS.LABELS)), np.float32)
+
+    def predict(self, cags, args):
+
+        dev = cags.dev
+        dev = dev.map(CAGS.parse)
+        dev = dev.map(lambda x: x["image"])
+        dev = dev.batch(args.batch_size)
+
+        test = cags.test
+        test = test.map(CAGS.parse)
+        test = test.map(lambda x: x["image"])
+        test = test.batch(args.batch_size)
+
+        num_model = 0
+        for model_h5 in os.listdir(self.ensemble_dir):
+            if model_h5.endswith('.h5'):
+                num_model += 1
+                print(model_h5)
+                model = tf.keras.models.load_model(os.path.join(self.ensemble_dir,model_h5))
+                self.dev_res += model.predict(dev)
+                self.test_res += model.predict(test)
+
+        if num_model:
+            self.dev_res /= num_model
+            self.test_res /= num_model
+
+    def evaluate(self):
+        dev_acc = tf.reduce_mean(tf.keras.metrics.sparse_categorical_accuracy(self.dev_labels, self.dev_res))
+        with open(os.path.join(self.ensemble_dir, "dev_out"), "w", encoding="utf-8") as out_file:
+            print("{:.4f}".format(dev_acc.numpy()), file=out_file)
+        with open(os.path.join(self.ensemble_dir, "cags_competition_test.txt"), "w", encoding="utf-8") as out_file:
+            for probs in self.test_res:
+                print(np.argmax(probs), file=out_file)
 
 if __name__ == "__main__":
     # Parse arguments

@@ -24,8 +24,11 @@ class Network:
             self.source_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=True,
                                                               name='encoder_embedding')
 
-            self.source_rnn = tf.keras.layers.Bidirectional(
-                tf.keras.layers.LSTM(args.rnn_dim, return_sequences=True), merge_mode='sum', name='encoder_rnn')
+            self.source_rnns = list()
+            for idx in range(args.num_layers):
+                self.source_rnns.append(tf.keras.layers.Bidirectional(
+                    tf.keras.layers.LSTM(args.rnn_dim, return_sequences=True),
+                    merge_mode='sum', name='encoder_rnn_{}'.format(idx)))
 
             self.target_embedding = tf.keras.layers.Embedding(num_source_chars, args.cle_dim, mask_zero=False,
                                                               name='target_embedding')
@@ -279,15 +282,15 @@ class Network:
         if os.path.isdir(args.logdir): out_path = os.path.join(args.logdir, out_path)
         with open(out_path, "w", encoding="utf-8") as out_file:
             for i, sentence in enumerate(self.predict(dataset, args)):
-                for j in range(len(morpho.test.data[morpho.test.FORMS].word_strings[i])):
+                for j in range(len(dataset.data[dataset.FORMS].word_strings[i])):
                     lemma = []
                     for c in map(int, sentence[j]):
                         if c == MorphoDataset.Factor.EOW: break
-                        lemma.append(morpho.test.data[morpho.test.LEMMAS].alphabet[c])
+                        lemma.append(dataset.data[dataset.LEMMAS].alphabet[c])
 
-                    print(morpho.test.data[morpho.test.FORMS].word_strings[i][j],
+                    print(dataset.data[dataset.FORMS].word_strings[i][j],
                           "".join(lemma),
-                          morpho.test.data[morpho.test.TAGS].word_strings[i][j],
+                          dataset.data[dataset.TAGS].word_strings[i][j],
                           sep="\t", file=out_file)
                 print(file=out_file)
 
@@ -351,5 +354,5 @@ if __name__ == "__main__":
     network.training(morpho, args)
     network.predicting(morpho.dev, 'dev', args)
     network.predicting(morpho.test, 'test', args)
-    network.save(curr_date, args)
+    #network.save(curr_date, args)
 
