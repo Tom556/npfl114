@@ -65,7 +65,7 @@ class Network:
         else:
             self.learning_rate_schedule = args.learning_rate
 
-        optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule)
+        optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate_schedule, clipnorm=1.)
 
         return optimizer
 
@@ -74,7 +74,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # TODO: Define reasonable defaults and optionally more parameters
     parser.add_argument("--batch_size", default=20, type=int, help="Number of episodes to train on.")
-    parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
+    parser.add_argument("--episodes", default=700, type=int, help="Training episodes.")
     parser.add_argument("--hidden_layer", default=512, type=int, help="Size of hidden layer.")
     parser.add_argument("--gamma", default=0.9999, type=float, help="Discount factor of the rewards.")
 
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # optimizer
     parser.add_argument("--optimizer", default="Adam", type=str)
     parser.add_argument("--learning_rate", default=0.005, type=float, help="Learning rate.")
-    parser.add_argument("--learning_rate_final", default=1e-6, type=float)
+    parser.add_argument("--learning_rate_final", default=1e-4, type=float)
     parser.add_argument("--decay", default="exponential", type=str)
 
     parser.add_argument("--verbose", default=False, action="store_true", help="Verbose TF logging.")
