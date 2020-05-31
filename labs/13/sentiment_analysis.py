@@ -19,8 +19,6 @@ class Network:
                                                                                    hidden_dropout_prob=args.dropout,
                                                                                    attention_probs_dropout_prob=args.dropout)
 
-        self._model.summary()
-        print(len(self._model.layers))
         self._model.layers[0].trainable = False
         self._optimizer = self.get_optimizer(args)
         self._model.compile(
@@ -63,12 +61,12 @@ class Network:
 
     def evaluate(self, dataset, dataset_name, args):
         self._model.reset_metrics()
-        iterator = tqdm(enumerate(dataset.batches(args.train.batch_size)), desc=f"Evaluating on {dataset_name}.")
+        iterator = tqdm(enumerate(dataset.batches(args.batch_size)), desc=f"Evaluating on {dataset_name}.")
         for iteration, batch in iterator:
             batch_tokens, batch_labels = batch
             batch_mask = np.sign(batch_tokens)
             metrics = self._model.test_on_batch([batch_tokens, batch_mask], batch_labels, reset_metrics=False)
-            iterator.set_description_str(f"Evaluating on {dataset_name}. loss: {metrics['loss']}")
+            iterator.set_description_str(f"Evaluating on {dataset_name}. loss: {metrics[0]}, accuracy: {metrics[1]}")
 
         with self._writer.as_default():
             tf.summary.experimental.set_step(self._model.optimizer.iterations)
@@ -81,9 +79,9 @@ class Network:
         for i, batch in enumerate(tqdm(dataset.batches(args.batch_size), desc="Predicting!")):
             batch_tokens, batch_labels = batch
             batch_mask = np.sign(batch_tokens)
-            batch_predictions = self._model.predict_on_batch([batch_tokens, batch_mask]).numpy()
-            for prediction in batch_predictions:
-                yield prediction
+            batch_predictions = self._model.predict_on_batch([batch_tokens, batch_mask])
+            for prediction in batch_predictions[0]:
+                yield np.argmax(prediction)
 
     def get_optimizer(self, args):
         learning_rate_final = args.learning_rate_final
