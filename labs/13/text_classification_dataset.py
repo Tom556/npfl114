@@ -33,7 +33,7 @@ class TextClassificationDataset:
                     self.LABELS.append(label)
                 label = self._label_map.get(label, -1)
 
-                self._data["tokens"].append(tokenizer(text))
+                self._data["tokens"].append(tokenizer.encode(text))
                 self._data["labels"].append(label)
 
             self._size = len(self._data["tokens"])
