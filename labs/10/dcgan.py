@@ -52,7 +52,7 @@ class Network:
         #   same padding, and ReLU activation (again `use_bias=False`)
         # - max-pools with kernel size 2 and stride 2
         # - flattens the current representation
-        # - applies batch normalized dense layer with 1024 uints and ReLU activation (`use_bias`)
+        # - applies batch normalized dense layer with 1024 units and ReLU activation (`use_bias`)
         # - applies output dense layer with one output and a suitable activation function
 
         discriminator_input = tf.keras.layers.Input([MNIST.H, MNIST.W, MNIST.C])
